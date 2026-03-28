@@ -69,23 +69,31 @@ def cli(log_level: str) -> None:
 @cli.command()
 @click.option("--portfolio", "-p", default=None, help="Path to portfolio CSV")
 @click.option("--transactions", "-t", default=None,
-              help="Path to Robinhood transaction CSV (builds portfolio on the fly)")
+              help="Path to Robinhood/Fidelity transaction CSV (builds portfolio on the fly)")
 @click.option("--date", "-d", default=None, callback=_parse_date, help="Report date (YYYY-MM-DD)")
 @click.option("--skip-scrape", is_flag=True, help="Use cached articles from DB")
 @click.option("--skip-email", is_flag=True, help="Generate newsletter but don't send email")
 @click.option("--output-dir", default="newsletters", show_default=True, help="Output directory")
-def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir) -> None:
+@click.option("--portfolio-name", default="default", show_default=True,
+              help="Portfolio identifier (used in DB and output path)")
+@click.option("--portfolio-label", default=None,
+              help="Display name for newsletter title (e.g. 'Roth IRA')")
+@click.option("--email-recipients", "-r", multiple=True,
+              help="Override email recipients (repeatable: -r a@b.com -r c@d.com)")
+def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir,
+        portfolio_name, portfolio_label, email_recipients) -> None:
     """Run the full pipeline: scrape → analyse → newsletter → email.
 
     Portfolio source (pick one):
-      --portfolio   existing portfolio CSV (ticker, shares, cost_basis, purchase_date)
-      --transactions  Robinhood activity export CSV (holdings computed automatically)
+      --portfolio     existing portfolio CSV (ticker, shares, cost_basis, purchase_date)
+      --transactions  activity export CSV (Robinhood or Fidelity; holdings computed automatically)
     """
     if transactions and portfolio:
         raise click.UsageError("Specify either --portfolio or --transactions, not both.")
 
+    recipients = list(email_recipients) if email_recipients else None
+
     if transactions:
-        # Derive a temporary portfolio CSV from the transaction history
         from src.portfolio.transaction_reader import read_transactions, export_holdings_to_csv
         import tempfile, os
 
@@ -96,19 +104,20 @@ def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir) -> N
         holdings = read_transactions(txn_path)
         click.echo(f"Derived {len(holdings)} holdings from transactions: {[h.ticker for h in holdings]}")
 
-        # Write to a temp portfolio CSV and hand off to the pipeline
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_") as tmp:
             tmp_path = tmp.name
         try:
             export_holdings_to_csv(holdings, tmp_path)
-            portfolio = tmp_path
             from src.pipeline.main_pipeline import run_pipeline
             result = run_pipeline(
-                portfolio_csv=portfolio,
+                portfolio_csv=tmp_path,
                 report_date=date,
                 skip_scrape=skip_scrape,
                 skip_email=skip_email,
                 output_dir=_validate_output_dir(output_dir),
+                portfolio_name=portfolio_name,
+                portfolio_label=portfolio_label,
+                email_recipients=recipients,
             )
         finally:
             os.unlink(tmp_path)
@@ -120,6 +129,9 @@ def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir) -> N
             skip_scrape=skip_scrape,
             skip_email=skip_email,
             output_dir=_validate_output_dir(output_dir),
+            portfolio_name=portfolio_name,
+            portfolio_label=portfolio_label,
+            email_recipients=recipients,
         )
 
     click.echo(f"Done. Status: {result['status']}")
@@ -162,6 +174,40 @@ def import_transactions(csv_path: str, output: str | None, dry_run: bool) -> Non
     dest = Path(output) if output else Path(settings.portfolio_csv_path)
     export_holdings_to_csv(holdings, dest)
     click.echo(f"\nPortfolio written to {dest}")
+
+
+# ── fidelity-import ───────────────────────────────────────────────
+@cli.command("fidelity-import")
+@click.argument("positions_csv", type=click.Path(exists=True))
+@click.option("--output", "-o", default=None, help="Write portfolio CSV to this path")
+@click.option("--account-filter", default=None,
+              help="Filter by account name substring (e.g. 'Trust')")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing files")
+def fidelity_import(positions_csv: str, output: str | None, account_filter: str | None, dry_run: bool) -> None:
+    """Import holdings from a Fidelity Portfolio_Positions CSV export.
+
+    POSITIONS_CSV: path to the Fidelity positions download (Portfolio_Positions_*.csv)
+    """
+    from src.portfolio.fidelity_reader import read_fidelity_positions, export_fidelity_to_portfolio_csv
+
+    holdings = read_fidelity_positions(positions_csv, account_filter=account_filter)
+    click.echo(f"Parsed {len(holdings)} holding(s):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    if output:
+        export_fidelity_to_portfolio_csv(positions_csv, output, account_filter=account_filter)
+        click.echo(f"\nPortfolio CSV written to {output}")
 
 
 # ── schedule ──────────────────────────────────────────────────────
@@ -234,7 +280,9 @@ def analyse(tickers: tuple[str, ...], date: date | None) -> None:
 @click.option("--date", "-d", default=None, callback=_parse_date, help="Report date (YYYY-MM-DD)")
 @click.option("--skip-email", is_flag=True, help="Generate only, don't send")
 @click.option("--output-dir", default="newsletters", show_default=True)
-def newsletter(date: date | None, skip_email: bool, output_dir: str) -> None:
+@click.option("--portfolio-name", default="default", show_default=True,
+              help="Portfolio identifier to regenerate newsletter for")
+def newsletter(date: date | None, skip_email: bool, output_dir: str, portfolio_name: str) -> None:
     """Regenerate newsletter from existing DB data and optionally send."""
     from src.pipeline.main_pipeline import run_pipeline
     result = run_pipeline(
@@ -242,10 +290,25 @@ def newsletter(date: date | None, skip_email: bool, output_dir: str) -> None:
         skip_scrape=True,
         skip_email=skip_email,
         output_dir=Path(output_dir),
+        portfolio_name=portfolio_name,
     )
     for fmt, path in result["paths"].items():
         if path:
             click.echo(f"  {fmt.upper()}: {path}")
+
+
+# ── portfolios ────────────────────────────────────────────────────
+@cli.command("portfolios")
+def portfolios_list() -> None:
+    """List configured portfolios from portfolios.json (or .env fallback)."""
+    from src.portfolio.portfolio_config import load_portfolio_defs
+    defs = load_portfolio_defs()
+    click.echo(f"{'NAME':<20} {'LABEL':<30} {'CSV/TRANSACTIONS'}")
+    click.echo("-" * 72)
+    for p in defs:
+        source = p.transactions_path or p.csv_path or "(none)"
+        click.echo(f"{p.name:<20} {p.label:<30} {source}")
+    click.echo(f"\n{len(defs)} portfolio(s) configured.")
 
 
 # ── test-newsletter ───────────────────────────────────────────────

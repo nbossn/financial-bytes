@@ -2,7 +2,7 @@
 import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
@@ -98,8 +98,46 @@ def _log_scrape(ticker: str, result: ScrapeResult) -> None:
         )
 
 
-def scrape_ticker(ticker: str) -> list[ScrapedArticle]:
-    """Run all scrapers for one ticker, deduplicate, cap at max_articles, and persist."""
+def _load_cached_articles(ticker: str) -> list[ScrapedArticle] | None:
+    """Return cached articles if ticker was already scraped today, else None."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.article_lookback_hours)
+    with get_db() as db:
+        rows = (
+            db.query(Article)
+            .filter(Article.ticker == ticker, Article.scraped_at >= cutoff)
+            .order_by(Article.published_at.desc())
+            .limit(settings.max_articles_per_ticker)
+            .all()
+        )
+    if not rows:
+        return None
+    logger.info(f"{ticker}: using {len(rows)} cached article(s) (scraped within lookback window)")
+    return [
+        ScrapedArticle(
+            ticker=r.ticker,
+            headline=r.headline,
+            url=r.url,
+            source=r.source,
+            body=r.body,
+            snippet=r.snippet,
+            published_at=r.published_at,
+        )
+        for r in rows
+    ]
+
+
+def scrape_ticker(ticker: str, skip_cached: bool = True) -> list[ScrapedArticle]:
+    """Run all scrapers for one ticker, deduplicate, cap at max_articles, and persist.
+
+    If skip_cached=True (default) and the ticker already has articles in DB within
+    the lookback window, return those without re-scraping. This prevents redundant
+    scraping when the same ticker appears across multiple portfolios on the same day.
+    """
+    if skip_cached:
+        cached = _load_cached_articles(ticker)
+        if cached is not None:
+            return cached
+
     logger.info(f"=== Scraping {ticker} ===")
     max_articles = settings.max_articles_per_ticker
 
@@ -164,17 +202,21 @@ def scrape_all_tickers(tickers: list[str]) -> dict[str, list[ScrapedArticle]]:
 def scrape_tickers_parallel(
     tickers: list[str],
     max_workers: int = 3,
+    skip_cached: bool = True,
 ) -> dict[str, list[ScrapedArticle]]:
     """Scrape multiple tickers concurrently.
 
     max_workers controls how many browser (Selenium) instances run at once.
     Values above 3 risk RAM exhaustion on typical VPS hardware.
+
+    skip_cached=True (default) skips re-scraping tickers that already have
+    fresh articles in the DB — shared across portfolios on the same day.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     results: dict[str, list[ScrapedArticle]] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(scrape_ticker, t): t for t in tickers}
+        future_map = {pool.submit(scrape_ticker, t, skip_cached): t for t in tickers}
         for future in as_completed(future_map):
             ticker = future_map[future]
             try:

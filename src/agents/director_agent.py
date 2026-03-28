@@ -126,6 +126,7 @@ def synthesize_portfolio(
     snapshot: PortfolioSnapshot,
     analyst_reports: list[AnalystReport],
     report_date: date | None = None,
+    portfolio_name: str = "default",
 ) -> DirectorReport:
     """Run the director agent to synthesize all analyst reports into a portfolio brief."""
     today = report_date or date.today()
@@ -173,17 +174,20 @@ def synthesize_portfolio(
         overall_recommendation=data.get("overall_recommendation", ""),
     )
 
-    _save_report(report)
+    _save_report(report, portfolio_name=portfolio_name)
     logger.info(f"Director report complete: theme='{report.market_theme[:60]}...' sentiment={report.overall_sentiment}")
     return report
 
 
-def _save_report(report: DirectorReport) -> None:
+def _save_report(report: DirectorReport, portfolio_name: str = "default") -> None:
     from src.db.models import Recommendation
     from src.db.session import get_db
 
     with get_db() as db:
-        existing = db.query(Recommendation).filter_by(report_date=report.report_date).first()
+        existing = db.query(Recommendation).filter_by(
+            report_date=report.report_date,
+            portfolio_name=portfolio_name,
+        ).first()
         data = dict(
             market_theme=report.market_theme,
             five_min_summary=report.five_min_summary,
@@ -198,4 +202,4 @@ def _save_report(report: DirectorReport) -> None:
             for k, v in data.items():
                 setattr(existing, k, v)
         else:
-            db.add(Recommendation(report_date=report.report_date, **data))
+            db.add(Recommendation(report_date=report.report_date, portfolio_name=portfolio_name, **data))

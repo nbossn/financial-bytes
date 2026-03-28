@@ -1,0 +1,27 @@
+[
+  {
+    "name": "default",
+    "label": "Portfolio",
+    "csv_path": "portfolio.csv",
+    "email_recipients": ["you@example.com"]
+  },
+  {
+    "name": "roth_ira",
+    "label": "Roth IRA",
+    "csv_path": "portfolios/roth_ira.csv",
+    "email_recipients": ["you@example.com", "spouse@example.com"]
+  },
+  {
+    "name": "robinhood",
+    "label": "Robinhood",
+    "transactions_path": "/path/to/robinhood_transactions.csv",
+    "email_recipients": ["you@example.com"]
+  },
+  {
+    "name": "fidelity_trust",
+    "label": "Fidelity Trust",
+    "fidelity_positions": "/path/to/Portfolio_Positions_Mar-28-2026.csv",
+    "fidelity_account_filter": "Trust",
+    "email_recipients": ["you@example.com"]
+  }
+]

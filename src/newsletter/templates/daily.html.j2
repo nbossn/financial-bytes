@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Financial Bytes — {{ report.report_date.strftime('%B %d, %Y') }}</title>
+<title>{% if portfolio_label and portfolio_label != 'Portfolio' %}{{ portfolio_label }} · {% endif %}Financial Bytes — {{ report.report_date.strftime('%B %d, %Y') }}</title>
 <style>
   /* ── Reset & Base ─────────────────────────────────────── */
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -213,7 +213,7 @@
 
   <!-- ① HEADER -->
   <div class="header">
-    <div class="logo">Financial Bytes</div>
+    <div class="logo">Financial Bytes{% if portfolio_label and portfolio_label != 'Portfolio' %} · {{ portfolio_label }}{% endif %}</div>
     <h1>Daily Portfolio Brief</h1>
     <div class="date">{{ report.report_date.strftime('%A, %B %d, %Y') }}</div>
     {% if report.market_theme %}

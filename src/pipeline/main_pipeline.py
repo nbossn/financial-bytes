@@ -41,6 +41,9 @@ def run_pipeline(
     skip_scrape: bool = False,
     skip_email: bool = False,
     output_dir: Path | None = None,
+    portfolio_name: str = "default",
+    portfolio_label: str | None = None,
+    email_recipients: list[str] | None = None,
 ) -> dict:
     """Full pipeline: portfolio → scrape → analyse → direct → newsletter → email.
 
@@ -52,16 +55,17 @@ def run_pipeline(
     today = report_date or date.today()
     csv_path = portfolio_csv or settings.portfolio_csv_path
     out = output_dir or Path("newsletters")
+    label = portfolio_label or portfolio_name.replace("_", " ").title()
     t0 = time.monotonic()
 
     logger.info("=" * 60)
-    logger.info(f"Financial Bytes pipeline starting — {today}")
+    logger.info(f"Financial Bytes pipeline starting — {today} [{portfolio_name}]")
     logger.info("=" * 60)
 
     # ── Phase 1: Portfolio ─────────────────────────────────────────
     logger.info("[1/5] Loading portfolio...")
     holdings = read_portfolio(csv_path)
-    save_portfolio_to_db(holdings)
+    save_portfolio_to_db(holdings, portfolio_name=portfolio_name)
     snapshot = PortfolioSnapshot(holdings=holdings)
     logger.info(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
 
@@ -147,6 +151,7 @@ def run_pipeline(
             ticker_signals=ticker_signals,
             report_date=today,
             max_concurrent=settings.max_parallel_analysts,
+            portfolio_name=portfolio_name,
         )
     )
     for report in analyst_reports:
@@ -158,7 +163,7 @@ def run_pipeline(
     logger.info("[5/5] Director synthesis...")
     from src.agents.director_agent import synthesize_portfolio
 
-    director_report = synthesize_portfolio(snapshot, analyst_reports, report_date=today)
+    director_report = synthesize_portfolio(snapshot, analyst_reports, report_date=today, portfolio_name=portfolio_name)
     logger.info(f"      Theme: {director_report.market_theme[:80]}")
     logger.info(f"      Sentiment: {director_report.overall_sentiment:+.2f}")
 
@@ -172,6 +177,8 @@ def run_pipeline(
         snapshot=snapshot,
         report_date=today,
         output_dir=out,
+        portfolio_name=portfolio_name,
+        portfolio_label=label,
     )
 
     # ── Email delivery ─────────────────────────────────────────────
@@ -188,6 +195,7 @@ def run_pipeline(
                 markdown_content=md_path.read_text(encoding="utf-8") if md_path and md_path.exists() else "",
                 pdf_path=pdf_path,
                 market_theme=director_report.market_theme,
+                recipients=email_recipients or None,
             )
     else:
         logger.info("Email delivery skipped (--skip-email flag)")

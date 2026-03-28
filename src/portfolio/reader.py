@@ -77,21 +77,22 @@ def read_portfolio(csv_path: str | Path) -> list[Holding]:
     return holdings
 
 
-def save_portfolio_to_db(holdings: list[Holding]) -> None:
-    """Upsert portfolio holdings into the database."""
+def save_portfolio_to_db(holdings: list[Holding], portfolio_name: str = "default") -> None:
+    """Upsert portfolio holdings into the database, scoped to portfolio_name."""
     from src.db.models import Portfolio
     from src.db.session import get_db
 
     with get_db() as db:
-        # Clear existing and re-insert (portfolio is source of truth from CSV)
-        db.query(Portfolio).delete()
+        # Clear only this portfolio's rows (not other portfolios)
+        db.query(Portfolio).filter_by(portfolio_name=portfolio_name).delete()
         for holding in holdings:
             db.add(
                 Portfolio(
+                    portfolio_name=portfolio_name,
                     ticker=holding.ticker,
                     shares=holding.shares,
                     cost_basis=holding.cost_basis,
                     purchase_date=holding.purchase_date,
                 )
             )
-    logger.info(f"Saved {len(holdings)} holdings to database")
+    logger.info(f"Saved {len(holdings)} holdings to database (portfolio: {portfolio_name})")

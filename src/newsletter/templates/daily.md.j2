@@ -1,4 +1,4 @@
-# Financial Bytes — {{ report.report_date.strftime('%A, %B %d, %Y') }}
+# {% if portfolio_label and portfolio_label != 'Portfolio' %}{{ portfolio_label }} · {% endif %}Financial Bytes — {{ report.report_date.strftime('%A, %B %d, %Y') }}
 
 > {{ report.market_theme }}
 

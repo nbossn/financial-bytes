@@ -28,6 +28,7 @@ class Portfolio(Base):
     __tablename__ = "portfolio"
 
     id = Column(Integer, primary_key=True)
+    portfolio_name = Column(String(100), nullable=False, default="default", index=True)
     ticker = Column(String(10), nullable=False)
     shares = Column(Numeric(15, 4), nullable=False)
     cost_basis = Column(Numeric(15, 4), nullable=False)
@@ -72,6 +73,7 @@ class Summary(Base):
     __tablename__ = "summaries"
 
     id = Column(Integer, primary_key=True)
+    portfolio_name = Column(String(100), nullable=False, default="default", index=True)
     ticker = Column(String(10), nullable=False)
     report_date = Column(Date, nullable=False)
     summary = Column(Text, nullable=False)
@@ -86,14 +88,17 @@ class Summary(Base):
     article_count = Column(Integer)
     created_at = Column(DateTime, default=_now)
 
-    __table_args__ = (UniqueConstraint("ticker", "report_date", name="uq_summary_ticker_date"),)
+    __table_args__ = (
+        UniqueConstraint("ticker", "report_date", "portfolio_name", name="uq_summary_ticker_date_portfolio"),
+    )
 
 
 class Recommendation(Base):
     __tablename__ = "recommendations"
 
     id = Column(Integer, primary_key=True)
-    report_date = Column(Date, unique=True, nullable=False)
+    portfolio_name = Column(String(100), nullable=False, default="default", index=True)
+    report_date = Column(Date, nullable=False)
     market_theme = Column(String(300))
     five_min_summary = Column(Text)
     portfolio_summary = Column(Text)
@@ -104,18 +109,27 @@ class Recommendation(Base):
     overall_sentiment = Column(Numeric(4, 3))
     created_at = Column(DateTime, default=_now)
 
+    __table_args__ = (
+        UniqueConstraint("report_date", "portfolio_name", name="uq_recommendation_date_portfolio"),
+    )
+
 
 class Newsletter(Base):
     __tablename__ = "newsletters"
 
     id = Column(Integer, primary_key=True)
-    report_date = Column(Date, unique=True, nullable=False)
+    portfolio_name = Column(String(100), nullable=False, default="default", index=True)
+    report_date = Column(Date, nullable=False)
     html_content = Column(Text)
     markdown_content = Column(Text)
     file_path = Column(String(500))
     email_sent = Column(Boolean, default=False)
     email_sent_at = Column(DateTime)
     created_at = Column(DateTime, default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("report_date", "portfolio_name", name="uq_newsletter_date_portfolio"),
+    )
 
 
 class ScrapeLog(Base):

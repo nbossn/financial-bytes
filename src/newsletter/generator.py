@@ -44,6 +44,7 @@ def _render_html(
     report: DirectorReport,
     analyst_reports: list[AnalystReport],
     snapshot: PortfolioSnapshot,
+    portfolio_label: str = "Portfolio",
 ) -> str:
     env = _make_env()
     template = env.get_template("daily.html.j2")
@@ -52,6 +53,7 @@ def _render_html(
         analyst_reports=analyst_reports,
         snapshot=snapshot,
         sources=_collect_sources(analyst_reports),
+        portfolio_label=portfolio_label,
     )
 
 
@@ -59,6 +61,7 @@ def _render_markdown(
     report: DirectorReport,
     analyst_reports: list[AnalystReport],
     snapshot: PortfolioSnapshot,
+    portfolio_label: str = "Portfolio",
 ) -> str:
     # Markdown template: use SandboxedEnvironment so AI-generated content
     # cannot execute Jinja2 template logic (prompt-injection-to-template-injection guard).
@@ -82,6 +85,7 @@ def _render_markdown(
         analyst_reports=analyst_reports,
         snapshot=snapshot,
         sources=_collect_sources(analyst_reports),
+        portfolio_label=portfolio_label,
     )
 
 
@@ -91,6 +95,8 @@ def generate(
     snapshot: PortfolioSnapshot,
     report_date: date | None = None,
     output_dir: Path | None = None,
+    portfolio_name: str = "default",
+    portfolio_label: str = "Portfolio",
 ) -> dict[str, Path]:
     """Render HTML + Markdown (+ PDF if WeasyPrint available).
 
@@ -98,20 +104,22 @@ def generate(
     """
     today = report_date or date.today()
     date_str = today.strftime("%Y-%m-%d")
-    out = output_dir or OUTPUT_DIR
+    # Namespace output under portfolios/{name}/ when using multiple portfolios
+    base_out = output_dir or OUTPUT_DIR
+    out = base_out / portfolio_name
     out.mkdir(parents=True, exist_ok=True)
 
     paths: dict[str, Path | None] = {}
 
     # ── HTML ──────────────────────────────────────────────
-    html_content = _render_html(report, analyst_reports, snapshot)
+    html_content = _render_html(report, analyst_reports, snapshot, portfolio_label=portfolio_label)
     html_path = out / f"{date_str}.html"
     html_path.write_text(html_content, encoding="utf-8")
     paths["html"] = html_path
     logger.info(f"Newsletter HTML written → {html_path}")
 
     # ── Markdown ──────────────────────────────────────────
-    md_content = _render_markdown(report, analyst_reports, snapshot)
+    md_content = _render_markdown(report, analyst_reports, snapshot, portfolio_label=portfolio_label)
     md_path = out / f"{date_str}.md"
     md_path.write_text(md_content, encoding="utf-8")
     paths["md"] = md_path
@@ -129,7 +137,8 @@ def generate(
         paths["pdf"] = None
 
     # ── DB ────────────────────────────────────────────────
-    _save_newsletter(report.report_date, html_content, md_content, paths.get("pdf"))
+    _save_newsletter(report.report_date, html_content, md_content, paths.get("pdf"),
+                     portfolio_name=portfolio_name)
 
     return paths  # type: ignore[return-value]
 
@@ -139,13 +148,17 @@ def _save_newsletter(
     html_content: str,
     md_content: str,
     pdf_path: Path | None,
+    portfolio_name: str = "default",
 ) -> None:
     try:
         from src.db.models import Newsletter
         from src.db.session import get_db
 
         with get_db() as db:
-            existing = db.query(Newsletter).filter_by(report_date=report_date).first()
+            existing = db.query(Newsletter).filter_by(
+                report_date=report_date,
+                portfolio_name=portfolio_name,
+            ).first()
             data = dict(
                 html_content=html_content,
                 markdown_content=md_content,
@@ -155,6 +168,6 @@ def _save_newsletter(
                 for k, v in data.items():
                     setattr(existing, k, v)
             else:
-                db.add(Newsletter(report_date=report_date, **data))
+                db.add(Newsletter(report_date=report_date, portfolio_name=portfolio_name, **data))
     except Exception as e:
         logger.warning(f"Newsletter DB save failed: {e}")

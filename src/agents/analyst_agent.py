@@ -139,6 +139,7 @@ def analyze_ticker(
     articles: list[ScrapedArticle],
     signals: TickerSignals | None = None,
     report_date: date | None = None,
+    portfolio_name: str = "default",
 ) -> AnalystReport:
     """Run the analyst agent for one ticker and return structured report."""
     today = report_date or date.today()
@@ -178,7 +179,7 @@ def analyze_ticker(
         **{k: v for k, v in data.items() if k != "ticker"},
     )
 
-    _save_report(report)
+    _save_report(report, portfolio_name=portfolio_name)
     logger.info(f"Analyst report: {holding.ticker} → {report.recommendation} (confidence: {report.confidence:.0%})")
     return report
 
@@ -220,6 +221,7 @@ async def analyze_ticker_async(
     articles: list,
     signals=None,
     report_date: date | None = None,
+    portfolio_name: str = "default",
 ) -> AnalystReport:
     """Async version of analyze_ticker — use with asyncio.gather for parallel execution."""
     today = report_date or date.today()
@@ -256,7 +258,7 @@ async def analyze_ticker_async(
         article_count=len(articles),
         **{k: v for k, v in data.items() if k != "ticker"},
     )
-    _save_report(report)
+    _save_report(report, portfolio_name=portfolio_name)
     logger.info(f"Analyst report: {holding.ticker} → {report.recommendation} ({report.confidence:.0%})")
     return report
 
@@ -267,6 +269,7 @@ async def run_analysts_parallel(
     ticker_signals: dict,
     report_date: date | None = None,
     max_concurrent: int = 5,
+    portfolio_name: str = "default",
 ) -> list[AnalystReport]:
     """Run analyst agents for all holdings concurrently, bounded by a semaphore."""
     sem = asyncio.Semaphore(max_concurrent)
@@ -278,18 +281,21 @@ async def run_analysts_parallel(
                 all_articles.get(holding.ticker, []),
                 ticker_signals.get(holding.ticker),
                 report_date=report_date,
+                portfolio_name=portfolio_name,
             )
 
     return list(await asyncio.gather(*[_bounded(h) for h in holdings]))
 
 
-def _save_report(report: AnalystReport) -> None:
+def _save_report(report: AnalystReport, portfolio_name: str = "default") -> None:
     from src.db.models import Summary
     from src.db.session import get_db
 
     with get_db() as db:
         existing = db.query(Summary).filter_by(
-            ticker=report.ticker, report_date=report.report_date
+            ticker=report.ticker,
+            report_date=report.report_date,
+            portfolio_name=portfolio_name,
         ).first()
 
         if existing:
@@ -306,6 +312,7 @@ def _save_report(report: AnalystReport) -> None:
         else:
             db.add(
                 Summary(
+                    portfolio_name=portfolio_name,
                     ticker=report.ticker,
                     report_date=report.report_date,
                     summary=report.summary,

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Portfolio
     portfolio_csv_path: str = Field("portfolio.csv", alias="PORTFOLIO_CSV_PATH")
+    portfolios_config: str = Field("portfolios.json", alias="PORTFOLIOS_CONFIG")
 
     # GitHub
     github_token: str = Field("", alias="GITHUB_TOKEN")
