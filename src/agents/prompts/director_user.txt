@@ -21,6 +21,20 @@ Total Unrealized P&L: {{ total_pnl_pct }}% (${{ total_pnl_dollars }})
 - Technical Signal: {{ report.technical_signal or 'N/A' }}
 {% endfor %}
 
+## Tax Context
+{% if tax_summary and tax_summary.has_data %}
+Estimated capital gains tax exposure if entire portfolio sold today:
+- Total Unrealized Gains: ${{ "%.2f"|format(tax_summary.total_unrealized_gain|float) }}
+- Total Unrealized Losses: ${{ "%.2f"|format(tax_summary.total_unrealized_loss|float) }}
+- Estimated Tax Range: ${{ "%.2f"|format(tax_summary.estimated_tax_low|float) }} – ${{ "%.2f"|format(tax_summary.estimated_tax_high|float) }}
+{% if tax_summary.harvesting_candidates %}
+- Tax-Loss Harvesting Opportunities ({{ tax_summary.harvesting_candidates|length }} positions, ${{ "%.2f"|format(tax_summary.total_harvestable_loss|float) }} total losses):
+{% for lot in tax_summary.harvesting_candidates %}  • {{ lot.ticker }}: ${{ "%.2f"|format(lot.unrealized_gain|float) }} ({{ lot.holding_period_label }})
+{% endfor %}{% endif %}
+Per-position summary:
+{% for lot in tax_summary.lots %}• {{ lot.ticker }}: {{ "+" if lot.unrealized_gain >= 0 else "" }}${{ "%.2f"|format(lot.unrealized_gain|float) }} unrealized, {{ lot.holding_period_label }}, est. tax rate {{ lot.tax_rate_label }}
+{% endfor %}{% endif %}
+
 ---
 
 Produce a JSON object with this exact structure:

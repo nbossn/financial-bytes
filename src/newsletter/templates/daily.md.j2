@@ -104,6 +104,35 @@
 {{ report.portfolio_summary }}
 
 ---
+{% if tax_summary and tax_summary.has_data %}
+
+## 🧾 Tax Efficiency
+
+| Ticker | Unrealized G/L | Holding Period | Est. Tax Range | Rate |
+|--------|----------------|----------------|----------------|------|
+{% for lot in tax_summary.lots %}| **{{ lot.ticker }}** | {{ '+' if lot.unrealized_gain >= 0 }}${{ "%.2f"|format(lot.unrealized_gain|float) }} | {{ lot.holding_period_label }} | {% if lot.estimated_tax_high > 0 %}${{ "%.2f"|format(lot.estimated_tax_low|float) }} – ${{ "%.2f"|format(lot.estimated_tax_high|float) }}{% else %}—{% endif %} | {{ lot.tax_rate_label }} |
+{% endfor %}
+
+| | |
+|---|---|
+| **Total Unrealized Gains** | ${{ "%.2f"|format(tax_summary.total_unrealized_gain|float) }} |
+| **Total Unrealized Losses** | -${{ "%.2f"|format(tax_summary.total_unrealized_loss|float|abs) }} |
+| **Estimated Tax (if sold today)** | ${{ "%.2f"|format(tax_summary.estimated_tax_low|float) }} – ${{ "%.2f"|format(tax_summary.estimated_tax_high|float) }} |
+
+{% if tax_summary.harvesting_candidates %}
+### 🍂 Tax-Loss Harvesting Opportunities
+
+{{ tax_summary.harvesting_candidates|length }} position{{ 's' if tax_summary.harvesting_candidates|length != 1 }} with **${{ "%.2f"|format(tax_summary.total_harvestable_loss|float|abs) }}** in harvestable losses:
+
+{% for lot in tax_summary.harvesting_candidates %}
+- **{{ lot.ticker }}**: ${{ "%.2f"|format(lot.unrealized_gain|float) }} ({{ lot.holding_period_label }}) — selling could offset capital gains
+{% endfor %}
+{% endif %}
+
+*Tax estimates are illustrative only. Short-term: 22%–37% ordinary income; Long-term: 15%–20% LTCG. Consult a tax adviser before making tax-motivated trades.*
+
+{% endif %}
+---
 
 {% if sources %}
 **Sources:** {{ sources | join(', ') }}

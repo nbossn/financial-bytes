@@ -49,3 +49,8 @@ class PortfolioSnapshot:
         if self.total_cost == 0:
             return Decimal(0)
         return (self.total_pnl / self.total_cost) * 100
+
+    @property
+    def tax_summary(self):
+        from src.portfolio.tax_calculator import compute_tax_summary
+        return compute_tax_summary(self)

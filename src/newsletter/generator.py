@@ -52,6 +52,7 @@ def _render_html(
         report=report,
         analyst_reports=analyst_reports,
         snapshot=snapshot,
+        tax_summary=snapshot.tax_summary,
         sources=_collect_sources(analyst_reports),
         portfolio_label=portfolio_label,
     )
@@ -84,6 +85,7 @@ def _render_markdown(
         report=report,
         analyst_reports=analyst_reports,
         snapshot=snapshot,
+        tax_summary=snapshot.tax_summary,
         sources=_collect_sources(analyst_reports),
         portfolio_label=portfolio_label,
     )

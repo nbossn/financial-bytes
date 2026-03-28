@@ -79,6 +79,7 @@ def _build_user_prompt(
 
     total_pnl = snapshot.total_pnl
     total_pnl_pct = snapshot.total_pnl_pct
+    tax = snapshot.tax_summary
 
     return template.render(
         report_date=date.today().strftime("%A, %B %d, %Y"),
@@ -88,6 +89,7 @@ def _build_user_prompt(
         total_pnl_dollars=f"{total_pnl:+,.2f}",
         global_market_context=global_context,
         analyst_reports=analyst_reports,
+        tax_summary=tax,
     )
 
 

@@ -430,7 +430,91 @@
   </div>
   {% endif %}
 
-  <!-- ⑩ FOOTER: SOURCES + DISCLAIMER -->
+  <!-- ⑩ TAX EFFICIENCY -->
+  {% if tax_summary and tax_summary.has_data %}
+  <div class="section">
+    <div class="section-label">Tax Efficiency</div>
+
+    <!-- Per-position tax lot table -->
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;">
+      <thead>
+        <tr style="background:#f1f5f9;text-align:left;">
+          <th style="padding:6px 10px;font-weight:600;">Ticker</th>
+          <th style="padding:6px 10px;font-weight:600;text-align:right;">Unrealized G/L</th>
+          <th style="padding:6px 10px;font-weight:600;">Holding Period</th>
+          <th style="padding:6px 10px;font-weight:600;text-align:right;">Est. Tax Range</th>
+          <th style="padding:6px 10px;font-weight:600;">Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lot in tax_summary.lots %}
+        <tr style="border-bottom:1px solid #e2e8f0;{% if lot.is_harvesting_candidate %}background:#fff7ed;{% endif %}">
+          <td style="padding:6px 10px;font-weight:600;">{{ lot.ticker }}</td>
+          <td style="padding:6px 10px;text-align:right;color:{% if lot.unrealized_gain >= 0 %}#16a34a{% else %}#dc2626{% endif %};">
+            {{ '+' if lot.unrealized_gain >= 0 }}${{ "%.2f"|format(lot.unrealized_gain|float) }}
+          </td>
+          <td style="padding:6px 10px;">{{ lot.holding_period_label }}</td>
+          <td style="padding:6px 10px;text-align:right;">
+            {% if lot.estimated_tax_high > 0 %}
+              ${{ "%.2f"|format(lot.estimated_tax_low|float) }} – ${{ "%.2f"|format(lot.estimated_tax_high|float) }}
+            {% else %}
+              <span style="color:#6b7280;">—</span>
+            {% endif %}
+          </td>
+          <td style="padding:6px 10px;color:#6b7280;font-size:11px;">{{ lot.tax_rate_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- Summary row -->
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;">
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 16px;flex:1;min-width:160px;">
+        <div style="font-size:11px;color:#6b7280;margin-bottom:2px;">Total Unrealized Gains</div>
+        <div style="font-size:16px;font-weight:700;color:#16a34a;">${{ "%.2f"|format(tax_summary.total_unrealized_gain|float) }}</div>
+      </div>
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 16px;flex:1;min-width:160px;">
+        <div style="font-size:11px;color:#6b7280;margin-bottom:2px;">Total Unrealized Losses</div>
+        <div style="font-size:16px;font-weight:700;color:#dc2626;">${{ "%.2f"|format(tax_summary.total_unrealized_loss|float|abs) }}</div>
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 16px;flex:1;min-width:200px;">
+        <div style="font-size:11px;color:#6b7280;margin-bottom:2px;">Estimated Tax (if sold today)</div>
+        <div style="font-size:16px;font-weight:700;color:#1d4ed8;">${{ "%.2f"|format(tax_summary.estimated_tax_low|float) }} – ${{ "%.2f"|format(tax_summary.estimated_tax_high|float) }}</div>
+      </div>
+    </div>
+
+    <!-- Tax-loss harvesting candidates -->
+    {% if tax_summary.harvesting_candidates %}
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px 16px;">
+      <div style="font-weight:600;color:#c2410c;margin-bottom:6px;">
+        🍂 Tax-Loss Harvesting Opportunities
+      </div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">
+        {{ tax_summary.harvesting_candidates|length }} position{{ 's' if tax_summary.harvesting_candidates|length != 1 }}
+        with ${{ "%.2f"|format(tax_summary.total_harvestable_loss|float|abs) }} in harvestable losses.
+        Selling these positions could offset capital gains and reduce your tax bill.
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        {% for lot in tax_summary.harvesting_candidates %}
+        <div style="background:white;border:1px solid #fed7aa;border-radius:6px;padding:6px 12px;font-size:12px;">
+          <span style="font-weight:600;">{{ lot.ticker }}</span>
+          <span style="color:#dc2626;margin-left:6px;">${{ "%.2f"|format(lot.unrealized_gain|float) }}</span>
+          <span style="color:#9ca3af;margin-left:4px;">({{ lot.holding_period_label }})</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <div style="font-size:11px;color:#9ca3af;margin-top:10px;font-style:italic;">
+      Tax estimates are illustrative only. Short-term rates assume 22%–37% ordinary income bracket;
+      long-term rates assume 15%–20% LTCG rate. "Unknown" holding periods show the full 15%–37% range.
+      Consult a tax adviser before making tax-motivated trades.
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ⑪ FOOTER: SOURCES + DISCLAIMER -->
   <div class="footer">
     {% if sources %}
     <div class="sources">
