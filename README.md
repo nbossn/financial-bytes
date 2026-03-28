@@ -2,6 +2,8 @@
 
 Automated daily stock portfolio newsletter powered by AI agents. Scrapes financial news from seven sources, analyzes articles per holding using Claude AI, and delivers a 5-minute executive brief to your inbox before market open.
 
+Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching, and AI analysis pipeline.
+
 ---
 
 ## Contents
@@ -10,6 +12,7 @@ Automated daily stock portfolio newsletter powered by AI agents. Scrapes financi
 - [How Data Is Collected and Used](#how-data-is-collected-and-used)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [Parallelism & Performance](#parallelism--performance)
 - [Usage](#usage)
 - [Examples](#examples)
 - [Architecture](#architecture)
@@ -24,10 +27,10 @@ Automated daily stock portfolio newsletter powered by AI agents. Scrapes financi
 
 Each morning before NYSE open, Financial Bytes runs an automated pipeline:
 
-1. **Loads your portfolio** from a local CSV file (ticker, shares, cost basis, purchase date)
-2. **Scrapes financial news** from Finviz, Yahoo Finance, CNBC, MarketWatch, Morningstar, Reuters, and Seeking Alpha for every holding
-3. **Fetches structured signals** from massive.com — analyst ratings, price targets, technical indicators, and Benzinga news sentiment
-4. **Runs an Analyst AI agent** (Claude Haiku) per ticker that reads the articles and produces a BUY/HOLD/SELL recommendation, confidence score, sentiment label, key catalysts, key risks, and a narrative context paragraph
+1. **Loads your portfolio** from a CSV file — either a hand-maintained `portfolio.csv` or derived automatically from a Robinhood transaction export
+2. **Scrapes financial news** from Finviz, Yahoo Finance, CNBC, MarketWatch, Morningstar, Reuters, and Seeking Alpha for every holding — **tickers scraped in parallel**
+3. **Fetches structured signals** from massive.com — analyst ratings, price targets, technical indicators, and Benzinga news sentiment — **all 4 endpoint calls per ticker run concurrently, and all tickers run in parallel**
+4. **Runs an Analyst AI agent** (Claude Haiku) per ticker — reads articles and produces a BUY/HOLD/SELL recommendation, confidence score, sentiment label, key catalysts, and risk factors — **all tickers analyzed concurrently** (bounded semaphore to respect rate limits)
 5. **Runs a Director AI agent** (Claude Sonnet) that synthesizes all per-stock reports into a portfolio-level brief with a market theme, 5-minute summary, top opportunities, and prioritized action items
 6. **Generates a newsletter** in HTML, Markdown, and PDF formats with portfolio P&L, per-stock analysis cards, and an action checklist
 7. **Delivers via Gmail SMTP** to your inbox by 7:30 AM ET
@@ -65,7 +68,7 @@ All scraped data is stored in a local PostgreSQL database (`financial_bytes`):
 
 ### What Is Sent to AI APIs
 
-The Analyst agent sends to Anthropic's API:
+The Analyst agent sends to Anthropic's API (via `claude -p` subprocess using your Claude Code subscription):
 - Scraped article headlines and body text (publicly available news)
 - Your holding details (ticker, shares, cost basis) for context
 - No personally identifiable information
@@ -93,6 +96,7 @@ The Director agent sends to Anthropic's API:
 - [Poetry](https://python-poetry.org/docs/#installation)
 - PostgreSQL 14+ (or use SQLite for testing: `DATABASE_URL=sqlite:///financial_bytes.db`)
 - Google Chrome (for Playwright/Selenium scrapers)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — authenticated with a Claude Code subscription (used for AI agent calls without consuming API credits)
 
 ### 1. Clone
 
@@ -120,6 +124,8 @@ Open `.env` and fill in your values (see [Configuration](#configuration) below).
 
 ### 4. Create Your Portfolio File
 
+**Option A — Hand-maintained CSV:**
+
 Create `portfolio.csv` in the project root (this file is gitignored):
 
 ```csv
@@ -135,6 +141,23 @@ AAPL,50,178.90,2024-03-15
 | `shares` | Decimal | Number of shares held |
 | `cost_basis` | Decimal (USD) | Average cost per share |
 | `purchase_date` | YYYY-MM-DD | Date of purchase (for holding period context) |
+
+**Option B — Derived from Robinhood transaction export:**
+
+Export your Robinhood activity CSV (`Account > Statements > CSV`) and import it:
+
+```bash
+# Preview derived holdings (no files written)
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv --dry-run
+
+# Write to portfolio.csv
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv
+
+# Or specify a custom output path
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv --output my-portfolio.csv
+```
+
+The importer parses all `Buy`/`Sell` rows, computes net shares and weighted average cost basis per ticker, and writes a standard `portfolio.csv` ready for `run`.
 
 ### 5. Initialize the Database
 
@@ -163,7 +186,7 @@ All configuration is via the `.env` file. Copy `.env.template` and fill in:
 ```bash
 # === Required ===
 
-# Anthropic Claude API (analyst + director agents)
+# Anthropic Claude API (used by claude CLI for agent calls)
 ANTHROPIC_API_KEY=sk-ant-...
 
 # massive.com API (market signals, analyst ratings, price targets)
@@ -203,6 +226,10 @@ SCRAPER_DELAY_MAX=5        # Max seconds between requests per scraper
 MAX_ARTICLES_PER_TICKER=15 # Articles fed to analyst agent per ticker
 ARTICLE_LOOKBACK_HOURS=24  # How far back to pull articles from DB
 
+# Parallelism (see "Parallelism & Performance" section)
+MAX_PARALLEL_TICKERS=3     # Parallel Selenium browser instances for scraping
+MAX_PARALLEL_ANALYSTS=5    # Concurrent claude -p (Haiku) calls for analysis
+
 # Search fallback (optional, falls back to DuckDuckGo if not set)
 # SERPAPI_KEY=your_serpapi_key_here
 
@@ -217,6 +244,94 @@ LOG_FILE=logs/financial_bytes.log
 2. Search for "App passwords"
 3. Create a new app password for "Mail"
 4. Use the 16-character password as `SMTP_PASS`
+
+---
+
+## Parallelism & Performance
+
+Financial Bytes uses four layers of parallelism to handle 15+ ticker portfolios in reasonable wall-clock time. Each layer is independently tunable.
+
+### Overview
+
+| Pipeline Phase | Concurrency Strategy | Default | Config Key |
+|---------------|---------------------|---------|------------|
+| Phase 2 — Scraping | `ThreadPoolExecutor` across tickers | 3 workers | `MAX_PARALLEL_TICKERS` |
+| Phase 3 — Market signals | `ThreadPoolExecutor` across tickers (up to 10) + inner `ThreadPoolExecutor` of 4 per ticker | auto | (hardcoded, see below) |
+| Phase 4 — Analyst agents | `asyncio.gather` with `asyncio.Semaphore` | 5 concurrent | `MAX_PARALLEL_ANALYSTS` |
+| Phase 5 — Director agent | Sequential (single call) | n/a | n/a |
+
+### Phase 2: Parallel Scraping
+
+**File:** `src/scrapers/scraper_orchestrator.py` — `scrape_tickers_parallel()`
+**Called from:** `src/pipeline/main_pipeline.py` — Phase 2
+
+Each ticker is scraped by a pool of up to `MAX_PARALLEL_TICKERS` worker threads. Within each ticker, Finviz (Selenium) runs first, then the remaining 6 scrapers run in their own inner pool of 3.
+
+```
+MAX_PARALLEL_TICKERS=3   # hard ceiling; each worker spawns a Chrome instance
+                          # Values above 3 risk RAM exhaustion on a typical VPS
+                          # (each Selenium instance uses ~200-400 MB)
+```
+
+**Where to change:** `.env` → `MAX_PARALLEL_TICKERS`
+**Code location:** `src/config.py:45` (`max_parallel_tickers` field)
+
+### Phase 3: Parallel Market Signals
+
+**File:** `src/api/endpoints.py` — `MassiveEndpoints.get_ticker_signals()`
+**Orchestrator:** `src/pipeline/main_pipeline.py` — `_fetch_signals_for_ticker()`, Phase 3
+
+Two layers of parallelism:
+
+1. **Across tickers** — `ThreadPoolExecutor(min(len(holdings), 10))` in `main_pipeline.py`. Each worker creates its own `MassiveClient` instance (thread-safe by design — no shared state).
+2. **Within each ticker** — quote, news, analyst ratings, and technicals are 4 separate HTTP calls dispatched to a `ThreadPoolExecutor(max_workers=4)` inside `get_ticker_signals()`.
+
+Combined effect: 15 tickers × 4 HTTP calls = 60 requests, all in-flight concurrently (bounded at 10 outer workers × 4 inner workers).
+
+**Where to change:** The outer worker count is calculated dynamically as `min(len(holdings), 10)` in `main_pipeline.py:119`. Increase or decrease the cap there if needed.
+**Code location:** `src/pipeline/main_pipeline.py:119`, `src/api/endpoints.py:169`
+
+### Phase 4: Concurrent Analyst Agents
+
+**File:** `src/agents/analyst_agent.py` — `run_analysts_parallel()`, `_call_claude_async()`
+**Called from:** `src/pipeline/main_pipeline.py` — Phase 4
+
+All analyst calls run concurrently via `asyncio.gather`. A `asyncio.Semaphore(MAX_PARALLEL_ANALYSTS)` caps how many `claude -p` subprocesses are active at once to prevent hitting Claude Code rate limits.
+
+Each analyst call:
+- Spawns `claude -p <prompt> --model claude-haiku-4-5-20251001 --dangerously-skip-permissions`
+- Input: ~2,000–5,000 tokens (articles + holding data)
+- Output: ~500–800 tokens (JSON analysis)
+- Typical duration: 8–15 seconds
+
+#### Tuning MAX_PARALLEL_ANALYSTS for your Claude Code plan
+
+| Plan | Safe range | Notes |
+|------|-----------|-------|
+| Claude Code Pro | 3–5 | Standard Pro is limited; start at 3, increase if no 429s |
+| Claude Code Max | 5–8 | Higher limits; 5 is the default sweet-spot |
+| Claude Code Enterprise | 8+ | Consult your org's rate limit allocation |
+
+Rate-limit errors (`429`, `529`, `overloaded`) are detected in stderr and trigger an extended backoff (3× longer than normal errors, up to 60 seconds between retries, with 5 total attempts).
+
+**Where to change:** `.env` → `MAX_PARALLEL_ANALYSTS`
+**Code location:** `src/config.py:46` (`max_parallel_analysts` field), `src/agents/analyst_agent.py:251` (semaphore)
+
+### Wall-Clock Time Estimates (15 tickers)
+
+| Phase | Sequential | Parallel (defaults) |
+|-------|-----------|---------------------|
+| Phase 2 — Scrape | ~45 min | ~15 min (3 workers) |
+| Phase 3 — Signals | ~90 s | ~10 s (10 outer × 4 inner) |
+| Phase 4 — Analysts | ~150 s | ~35 s (5 concurrent Haiku) |
+| Phase 5 — Director | ~20 s | ~20 s (single Sonnet call) |
+| **Total** | **~50 min** | **~20 min** |
+
+### SQLite Concurrent Write Safety
+
+If you use SQLite (`DATABASE_URL=sqlite:///...`) instead of PostgreSQL, the session layer automatically enables WAL mode and a 10-second busy timeout so multi-threaded writes from parallel scrapers and agents don't deadlock.
+
+**Code location:** `src/db/session.py:20–30`
 
 ---
 
@@ -237,8 +352,6 @@ make run-once
 # or
 poetry run python -m src.cli run
 ```
-
-Runs scrape → analyse → newsletter → email immediately using today's date.
 
 ### Available Commands
 
@@ -261,13 +374,23 @@ Runs scrape → analyse → newsletter → email immediately using today's date.
 ### CLI Reference
 
 ```bash
-# Full pipeline with options
+# Full pipeline — hand-maintained portfolio CSV
 poetry run python -m src.cli run \
   --portfolio path/to/portfolio.csv \
   --date 2025-12-01 \
   --skip-scrape \       # Use cached articles from DB
   --skip-email \        # Generate but don't send
   --output-dir newsletters/custom
+
+# Full pipeline — derive portfolio from Robinhood transaction CSV
+poetry run python -m src.cli run \
+  --transactions ~/Downloads/robinhood_activity.csv \
+  --skip-email
+
+# Import transactions and write portfolio.csv (one-time setup or refresh)
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv --dry-run
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv --output my-portfolio.csv
 
 # Scrape specific tickers
 poetry run python -m src.cli scrape MSFT NVDA AAPL
@@ -301,7 +424,7 @@ poetry run python -m src.cli scrape MSFT NVDA
 # → MSFT: 14 article(s) scraped
 # → NVDA: 12 article(s) scraped
 
-# 3. Run analysis on cached articles (uses Claude API)
+# 3. Run analysis on cached articles (uses Claude via claude -p)
 poetry run python -m src.cli analyse MSFT NVDA
 # → MSFT: BUY (81%) — Bullish
 # → NVDA: HOLD (88%) — Very Bullish
@@ -314,6 +437,27 @@ poetry run python -m src.cli newsletter --skip-email
 
 # 5. Run the full pipeline (scrape + analyze + email)
 make run-once
+```
+
+### Example: Import from Robinhood
+
+```bash
+# Preview what will be derived (no files written)
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv --dry-run
+# → Derived 8 open holdings:
+#
+#   TICKER         SHARES     AVG COST     TOTAL COST  FIRST BUY
+#   ──────────────────────────────────────────────────────────────
+#   MSFT          100.0000     555.2300     55,523.00  2025-08-01
+#   NVDA          200.0000     206.4500     41,290.00  2025-11-05
+#   ...
+
+# Write derived portfolio and run the full pipeline
+poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv
+make run-once
+
+# Or derive and run in a single step (no file written to disk)
+poetry run python -m src.cli run --transactions ~/Downloads/robinhood_activity.csv --skip-email
 ```
 
 ### Example: Using a Custom Portfolio File
@@ -338,8 +482,6 @@ make audit
 ```
 
 ### Example Newsletter Output
-
-The generated newsletter includes:
 
 ```
 Financial Bytes — Dec 01, 2025
@@ -373,62 +515,75 @@ Action Items
 
 ## Pipeline Timeline (Daily, ET)
 
-| Time | Stage |
-|------|-------|
-| 5:00 AM | Orchestrator starts; portfolio loaded; DB checked |
-| 5:05–5:30 AM | Web scrapers + massive.com API signals collected |
-| 5:30–6:30 AM | Analyst Agent per ticker (Claude Haiku) |
-| 6:30–7:00 AM | Director Agent synthesis (Claude Sonnet) |
-| 7:00–7:20 AM | Newsletter rendered (HTML + Markdown + PDF) |
-| 7:20–7:30 AM | Email delivered + GitHub archive commit |
+With default parallelism settings on a 15-ticker portfolio:
+
+| Time | Stage | Parallelism |
+|------|-------|-------------|
+| 5:00 AM | Portfolio loaded; DB checked | — |
+| 5:00–5:15 AM | Web scraping across all tickers | 3 parallel Chrome instances |
+| 5:15–5:16 AM | massive.com market signals | Up to 10 tickers × 4 HTTP calls concurrently |
+| 5:16–5:22 AM | Analyst Agent per ticker (Claude Haiku) | 5 concurrent `claude -p` subprocesses |
+| 5:22–5:27 AM | Director Agent synthesis (Claude Sonnet) | Single call |
+| 5:27–5:35 AM | Newsletter rendered (HTML + Markdown + PDF) | — |
+| 7:20–7:30 AM | Email delivered + GitHub archive commit | — |
 
 ---
 
 ## Architecture
 
 ```
-portfolio.csv
+portfolio.csv  ─or─  robinhood_transactions.csv
+     │                        │
+     │                  transaction_reader.py
+     │                  (net shares, avg cost basis)
+     ▼                        │
+[main_pipeline.py] ◀──────────┘
      │
-     ▼
-[Orchestrator / main_pipeline.py]
+     ├─▶ Phase 2: Scraping (parallel across tickers) ─────────────────┐
+     │   ThreadPoolExecutor(MAX_PARALLEL_TICKERS=3)                   │
+     │   Each ticker: Finviz → [Yahoo/CNBC/MarketWatch/...] in pool   │
+     │   Fallback: DuckDuckGo if <3 articles found                    │
+     │                                                                │
+     ├─▶ Phase 3: Market Signals (parallel across + within tickers) ──┤
+     │   Outer: ThreadPoolExecutor(min(N,10)) across tickers          │
+     │   Inner: ThreadPoolExecutor(4) per ticker                      │
+     │   ├── get_quote()                                              │
+     │   ├── get_news()              ← all 4 run concurrently         │
+     │   ├── get_analyst_ratings()                                    │
+     │   └── get_technicals()                                         │
+     │                                       Articles + Signals ◀─────┘
      │
-     ├─▶ [Scrapers] ──────────────────────────────────────────────┐
-     │   Finviz (Selenium)                                        │
-     │   Yahoo Finance, CNBC, MarketWatch (Playwright)            │
-     │   Morningstar, Reuters, Seeking Alpha (requests)           │
-     │   DuckDuckGo fallback                                      │
-     │                                                            │
-     ├─▶ [massive.com API] ──────────────────────────────────────┐│
-     │   Quotes, analyst ratings, price targets, signals          ││
-     │                                                            ││
-     │                            Articles + Signals ◀───────────┘│
-     │                                                            │
-     ├─▶ [Analyst Agent × N tickers] ◀───────────────────────────┘
-     │   Model: claude-haiku-4-5
-     │   Output: AnalystReport per ticker
+     ├─▶ Phase 4: Analyst Agents (asyncio.gather + Semaphore) ────────┐
+     │   asyncio.Semaphore(MAX_PARALLEL_ANALYSTS=5)                   │
+     │   Each: claude -p --model claude-haiku-4-5-20251001            │
+     │   Rate-limit backoff: detects 429/529/overloaded               │
+     │   Output: AnalystReport per ticker                             │
+     │                                                                │
+     ├─▶ Phase 5: Director Agent ──────────────────────────────────────┘
+     │   claude -p --model claude-sonnet-4-6
+     │   Input: all AnalystReports + portfolio snapshot
+     │   Output: DirectorReport (market theme, action items)
      │
-     ├─▶ [Director Agent]
-     │   Model: claude-sonnet-4-6
-     │   Output: DirectorReport (portfolio synthesis)
+     ├─▶ Newsletter Generator
+     │   Jinja2 → HTML + Markdown + PDF (WeasyPrint)
      │
-     ├─▶ [Newsletter Generator]
-     │   Output: HTML + Markdown + PDF
-     │
-     └─▶ [Email Sender]  +  [GitHub Sync]
-         Gmail SMTP           Optional archive commit
+     └─▶ Email Sender  +  GitHub Sync
+         Gmail SMTP         Optional archive commit
 ```
 
 ### Key Modules
 
 | Module | Purpose |
 |--------|---------|
-| `src/config.py` | Pydantic settings from `.env` |
+| `src/config.py` | All settings (Pydantic) — reads from `.env` |
+| `src/pipeline/main_pipeline.py` | Pipeline orchestrator — all 4 parallel phases |
 | `src/portfolio/reader.py` | CSV parser, DB persistence |
-| `src/scrapers/` | Per-source scrapers + orchestrator |
-| `src/api/massive_client.py` | massive.com REST client |
-| `src/agents/analyst_agent.py` | Per-ticker Claude Haiku analysis |
-| `src/agents/director_agent.py` | Portfolio-level Claude Sonnet synthesis |
-| `src/newsletter/generator.py` | Jinja2 HTML/MD rendering |
+| `src/portfolio/transaction_reader.py` | Robinhood activity CSV parser |
+| `src/scrapers/scraper_orchestrator.py` | Multi-source scraping + parallel ticker dispatch |
+| `src/api/endpoints.py` | massive.com REST client — parallel signal fetching |
+| `src/agents/analyst_agent.py` | Analyst agent — async subprocess pool + semaphore |
+| `src/agents/director_agent.py` | Director agent — portfolio synthesis |
+| `src/newsletter/generator.py` | Jinja2 HTML/MD rendering + PDF |
 | `src/delivery/email_sender.py` | Gmail SMTP delivery |
 | `src/agents/fullstack_agent.py` | Weekly maintenance audit |
 | `src/scheduler.py` | APScheduler daemon |
@@ -440,9 +595,11 @@ portfolio.csv
 
 | Agent | Model | Runs | Purpose |
 |-------|-------|------|---------|
-| **Analyst** | claude-haiku-4-5 | Daily, per ticker | Article summarization, sentiment scoring, BUY/HOLD/SELL recommendation |
-| **Director** | claude-sonnet-4-6 | Daily, once | Portfolio synthesis, market theme, action items |
+| **Analyst** | `claude-haiku-4-5-20251001` | Daily, per ticker (parallel) | Article summarization, sentiment scoring, BUY/HOLD/SELL recommendation |
+| **Director** | `claude-sonnet-4-6` | Daily, once | Portfolio synthesis, market theme, action items |
 | **Fullstack** | — (no AI) | Weekly (via `make audit`) | DB health, cost audit, security scan, GitHub sync |
+
+All AI calls are made via `claude -p` subprocesses, routing through your Claude Code subscription rather than consuming Anthropic API credits.
 
 ---
 
@@ -464,14 +621,25 @@ portfolio.csv
 
 ## Cost Estimate
 
-| Component | Model | Est. Daily Cost |
-|-----------|-------|----------------|
-| Analyst Agent (per ticker) | claude-haiku-4-5 | ~$0.005–0.05 per ticker |
-| Director Agent (once) | claude-sonnet-4-6 | ~$0.05–0.20 |
-| massive.com API | — | Varies by plan |
-| **Total (5-ticker portfolio)** | | **~$0.07–0.45/day** |
+All AI calls use `claude -p` via the Claude Code CLI, which routes through your Claude Code subscription — no separate Anthropic API credits consumed.
 
-Run `make audit` to see actual estimated costs based on your DB call history.
+| Component | Model | Tokens per call (est.) |
+|-----------|-------|------------------------|
+| Analyst Agent (per ticker) | Haiku 4.5 | ~3,000 in + ~600 out |
+| Director Agent (once) | Sonnet 4.6 | ~8,000 in + ~800 out |
+| **15-ticker pipeline total** | | ~55,000 in + ~9,800 out |
+
+### massive.com API
+
+| Component | Calls per pipeline run |
+|-----------|----------------------|
+| Quotes | 1 per ticker |
+| News articles | 1 per ticker |
+| Analyst ratings | 1 per ticker |
+| Technical indicators | 1 per ticker |
+| **15-ticker total** | **60 API calls** |
+
+Costs vary by massive.com plan. Run `make audit` to see actual estimated costs based on your DB call history.
 
 ---
 
