@@ -1,0 +1,62 @@
+# Environment & secrets
+.env
+.env.*
+!.env.template
+
+# Sensitive data — never commit
+portfolio.csv
+portfolio.json
+
+# Newsletter output (managed via fullstack agent commits)
+newsletters/**/*.html
+newsletters/**/*.pdf
+newsletters/**/*.md
+newsletters/*.html
+newsletters/*.pdf
+newsletters/*.md
+!newsletters/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test & coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright / Selenium
+playwright-report/
+test-results/
+chromedriver
+geckodriver

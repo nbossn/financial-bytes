@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Financial Bytes — {{ report.report_date.strftime('%B %d, %Y') }}</title>
+<style>
+  /* ── Reset & Base ─────────────────────────────────────── */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    background: #f4f5f7;
+    color: #1a1a2e;
+  }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Layout ───────────────────────────────────────────── */
+  .wrapper { max-width: 680px; margin: 32px auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 16px rgba(0,0,0,.08); }
+
+  /* ── Header ───────────────────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+    padding: 36px 40px 28px;
+    color: #fff;
+  }
+  .header .logo { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: #94a3b8; margin-bottom: 10px; }
+  .header h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+  .header .date { font-size: 13px; color: #94a3b8; margin-top: 6px; }
+  .header .theme {
+    margin-top: 16px;
+    padding: 12px 16px;
+    background: rgba(255,255,255,.08);
+    border-left: 3px solid #3b82f6;
+    border-radius: 4px;
+    font-size: 14px;
+    color: #e2e8f0;
+    font-style: italic;
+  }
+
+  /* ── Sections ─────────────────────────────────────────── */
+  .section { padding: 28px 40px; border-bottom: 1px solid #f1f5f9; }
+  .section:last-child { border-bottom: none; }
+  .section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 14px;
+  }
+  .section h2 { font-size: 17px; font-weight: 600; margin-bottom: 10px; color: #0f172a; }
+
+  /* ── Portfolio Snapshot ───────────────────────────────── */
+  .portfolio-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px; }
+  .portfolio-card {
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 14px 16px;
+    border: 1px solid #e2e8f0;
+  }
+  .portfolio-card .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .portfolio-card .value { font-size: 18px; font-weight: 700; color: #0f172a; }
+  .portfolio-card .sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .up { color: #16a34a !important; }
+  .down { color: #dc2626 !important; }
+  .neutral { color: #64748b !important; }
+
+  /* ── Market Pulse ─────────────────────────────────────── */
+  .market-pulse {
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 14px 18px;
+    border: 1px solid #e2e8f0;
+    font-size: 13px;
+    color: #334155;
+  }
+
+  /* ── Director's Brief ────────────────────────────────── */
+  .brief-body { font-size: 14.5px; color: #334155; line-height: 1.75; white-space: pre-wrap; }
+  .overall-rec {
+    margin-top: 16px;
+    padding: 12px 16px;
+    background: #eff6ff;
+    border-radius: 8px;
+    border-left: 3px solid #2563eb;
+    font-size: 14px;
+    color: #1e40af;
+    font-weight: 500;
+  }
+
+  /* ── Sentiment Meter ─────────────────────────────────── */
+  .sentiment-bar-wrap { margin-top: 12px; }
+  .sentiment-bar-track { height: 8px; background: #e2e8f0; border-radius: 99px; position: relative; }
+  .sentiment-bar-fill { height: 8px; border-radius: 99px; position: absolute; top: 0; }
+  .sentiment-labels { display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-top: 4px; }
+
+  /* ── Action Items ────────────────────────────────────── */
+  .action-list { list-style: none; }
+  .action-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    background: #fafafa;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+    font-size: 14px;
+    color: #334155;
+  }
+  .action-list li .num {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    background: #2563eb;
+    color: #fff;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+  }
+
+  /* ── Opportunities / Risks ───────────────────────────── */
+  .signal-grid { display: grid; gap: 10px; }
+  .signal-card {
+    border-radius: 8px;
+    padding: 14px 16px;
+    border: 1px solid #e2e8f0;
+  }
+  .signal-card.opp { background: #f0fdf4; border-color: #bbf7d0; }
+  .signal-card.risk { background: #fff7ed; border-color: #fed7aa; }
+  .signal-card .sig-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .signal-card .ticker-badge {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+  }
+  .opp .ticker-badge { background: #dcfce7; color: #15803d; }
+  .risk .ticker-badge { background: #ffedd5; color: #c2410c; }
+  .signal-badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    letter-spacing: 1px;
+  }
+  .badge-buy { background: #dcfce7; color: #15803d; }
+  .badge-hold { background: #fef9c3; color: #854d0e; }
+  .badge-sell { background: #fee2e2; color: #991b1b; }
+  .badge-high { background: #fee2e2; color: #991b1b; }
+  .badge-medium { background: #ffedd5; color: #c2410c; }
+  .badge-low { background: #fef9c3; color: #854d0e; }
+  .signal-card .rationale { font-size: 13px; color: #374151; }
+  .signal-card .outlook { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .signal-card .outlook-item { font-size: 12px; }
+  .signal-card .outlook-item .ok { color: #64748b; text-transform: uppercase; font-size: 10px; letter-spacing: 1px; display: block; }
+
+  /* ── Per-Stock Analysis ──────────────────────────────── */
+  .stock-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .stock-card .sc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .stock-card .sc-ticker { font-size: 16px; font-weight: 700; color: #0f172a; }
+  .stock-card .sc-badges { display: flex; gap: 6px; align-items: center; }
+  .sc-body { padding: 14px 18px; }
+  .sc-summary { font-size: 13.5px; color: #374151; line-height: 1.65; }
+  .sc-meta { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .sc-meta-item .mk { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; }
+  .sc-meta-item .mv { font-size: 13px; color: #334155; margin-top: 2px; }
+  .sc-lists { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .sc-list h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-bottom: 6px; }
+  .sc-list ul { list-style: none; }
+  .sc-list ul li { font-size: 12.5px; color: #374151; padding: 3px 0; padding-left: 14px; position: relative; }
+  .sc-list ul li::before { content: '•'; position: absolute; left: 0; color: #94a3b8; }
+  .sc-list.cats ul li::before { color: #16a34a; }
+  .sc-list.risks ul li::before { color: #dc2626; }
+  .confidence-bar { height: 4px; background: #e2e8f0; border-radius: 99px; margin-top: 10px; }
+  .confidence-fill { height: 4px; border-radius: 99px; background: #2563eb; }
+  .confidence-label { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+
+  /* ── Footer ───────────────────────────────────────────── */
+  .footer {
+    background: #f8fafc;
+    padding: 24px 40px;
+    border-top: 1px solid #e2e8f0;
+  }
+  .footer .disclaimer { font-size: 11px; color: #94a3b8; line-height: 1.6; }
+  .footer .sources { margin-top: 12px; font-size: 11px; color: #94a3b8; }
+  .footer .sources strong { color: #64748b; }
+  .footer .generated { margin-top: 10px; font-size: 11px; color: #cbd5e1; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- ① HEADER -->
+  <div class="header">
+    <div class="logo">Financial Bytes</div>
+    <h1>Daily Portfolio Brief</h1>
+    <div class="date">{{ report.report_date.strftime('%A, %B %d, %Y') }}</div>
+    {% if report.market_theme %}
+    <div class="theme">{{ report.market_theme }}</div>
+    {% endif %}
+  </div>
+
+  <!-- ② PORTFOLIO SNAPSHOT -->
+  <div class="section">
+    <div class="section-label">Portfolio Snapshot</div>
+    <div class="portfolio-grid">
+      <div class="portfolio-card">
+        <div class="label">Cost Basis</div>
+        <div class="value">${{ snapshot.total_cost | format_number }}</div>
+        <div class="sub">{{ snapshot.holdings | length }} position{{ 's' if snapshot.holdings | length != 1 }}</div>
+      </div>
+      <div class="portfolio-card">
+        <div class="label">Current Value</div>
+        <div class="value">${{ snapshot.total_value | format_number }}</div>
+        <div class="sub">Market price</div>
+      </div>
+      <div class="portfolio-card">
+        <div class="label">Unrealized P&amp;L</div>
+        <div class="value {{ 'up' if snapshot.total_pnl >= 0 else 'down' }}">
+          {{ '+' if snapshot.total_pnl >= 0 }}${{ snapshot.total_pnl | abs | format_number }}
+        </div>
+        <div class="sub {{ 'up' if snapshot.total_pnl >= 0 else 'down' }}">
+          {{ '+' if snapshot.total_pnl_pct >= 0 }}{{ "%.1f"|format(snapshot.total_pnl_pct) }}%
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ MARKET PULSE -->
+  <div class="section">
+    <div class="section-label">Market Pulse</div>
+    <div class="market-pulse">{{ report.global_market_context }}</div>
+  </div>
+
+  <!-- ④ DIRECTOR'S BRIEF (5-min read) -->
+  <div class="section">
+    <div class="section-label">Director's Brief — 5-Minute Read</div>
+    <div class="brief-body">{{ report.five_min_summary }}</div>
+    {% if report.overall_recommendation %}
+    <div class="overall-rec">{{ report.overall_recommendation }}</div>
+    {% endif %}
+    <!-- Sentiment meter -->
+    <div class="sentiment-bar-wrap">
+      {% set pct = ((report.overall_sentiment + 1) / 2 * 100) | int %}
+      {% set bar_color = '#16a34a' if report.overall_sentiment > 0.15 else '#dc2626' if report.overall_sentiment < -0.15 else '#d97706' %}
+      <div class="sentiment-bar-track">
+        <div class="sentiment-bar-fill" style="width:{{ pct }}%; background:{{ bar_color }};"></div>
+      </div>
+      <div class="sentiment-labels">
+        <span>Very Bearish</span>
+        <span>Neutral</span>
+        <span>Very Bullish</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑤ ACTION ITEMS -->
+  {% if report.action_items %}
+  <div class="section">
+    <div class="section-label">Action Items</div>
+    <ul class="action-list">
+      {% for item in report.action_items %}
+      <li>
+        <span class="num">{{ loop.index }}</span>
+        <span>{{ item }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <!-- ⑥ TOP OPPORTUNITIES -->
+  {% if report.top_opportunities %}
+  <div class="section">
+    <div class="section-label">Top Opportunities</div>
+    <div class="signal-grid">
+      {% for opp in report.top_opportunities %}
+      <div class="signal-card opp">
+        <div class="sig-header">
+          <span class="ticker-badge">{{ opp.ticker }}</span>
+          {% if opp.signal %}
+          <span class="signal-badge badge-{{ opp.signal | lower }}">{{ opp.signal }}</span>
+          {% endif %}
+        </div>
+        {% if opp.rationale %}
+        <div class="rationale">{{ opp.rationale }}</div>
+        {% endif %}
+        {% if opp.short_term or opp.long_term %}
+        <div class="outlook">
+          {% if opp.short_term %}
+          <div class="outlook-item">
+            <span class="ok">1–4 weeks</span>
+            {{ opp.short_term }}
+          </div>
+          {% endif %}
+          {% if opp.long_term %}
+          <div class="outlook-item">
+            <span class="ok">3–12 months</span>
+            {{ opp.long_term }}
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ⑦ RISK WATCH -->
+  {% if report.top_risks %}
+  <div class="section">
+    <div class="section-label">Risk Watch</div>
+    <div class="signal-grid">
+      {% for risk in report.top_risks %}
+      <div class="signal-card risk">
+        <div class="sig-header">
+          <span class="ticker-badge">{{ risk.ticker }}</span>
+          {% if risk.severity %}
+          <span class="signal-badge badge-{{ risk.severity | lower }}">{{ risk.severity }}</span>
+          {% endif %}
+        </div>
+        {% if risk.risk %}
+        <div class="rationale">{{ risk.risk }}</div>
+        {% endif %}
+        {% if risk.mitigation %}
+        <div class="rationale" style="margin-top:6px;color:#6b7280;font-style:italic;">{{ risk.mitigation }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ⑧ PER-STOCK ANALYSIS CARDS -->
+  {% if analyst_reports %}
+  <div class="section">
+    <div class="section-label">Analyst Ratings Desk</div>
+    {% for ar in analyst_reports %}
+    <div class="stock-card">
+      <div class="sc-header">
+        <span class="sc-ticker">{{ ar.ticker }}</span>
+        <div class="sc-badges">
+          <span class="signal-badge badge-{{ ar.recommendation | lower }}">{{ ar.recommendation }}</span>
+          {% if ar.sentiment_label %}
+          <span style="font-size:12px;color:#64748b;">{{ ar.sentiment_label }}</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="sc-body">
+        <div class="sc-summary">{{ ar.summary }}</div>
+        <div class="sc-meta">
+          {% if ar.price_target %}
+          <div class="sc-meta-item">
+            <div class="mk">Price Target</div>
+            <div class="mv">${{ "%.2f"|format(ar.price_target) }}</div>
+          </div>
+          {% endif %}
+          {% if ar.analyst_consensus %}
+          <div class="sc-meta-item">
+            <div class="mk">Analyst Consensus</div>
+            <div class="mv">{{ ar.analyst_consensus }}</div>
+          </div>
+          {% endif %}
+          {% if ar.technical_signal %}
+          <div class="sc-meta-item" style="grid-column:1/-1;">
+            <div class="mk">Technical Signal</div>
+            <div class="mv">{{ ar.technical_signal }}</div>
+          </div>
+          {% endif %}
+          {% if ar.recommendation_context %}
+          <div class="sc-meta-item" style="grid-column:1/-1;">
+            <div class="mk">Context</div>
+            <div class="mv">{{ ar.recommendation_context }}</div>
+          </div>
+          {% endif %}
+        </div>
+        {% if ar.key_catalysts or ar.key_risks %}
+        <div class="sc-lists">
+          {% if ar.key_catalysts %}
+          <div class="sc-list cats">
+            <h4>Catalysts</h4>
+            <ul>{% for c in ar.key_catalysts %}<li>{{ c }}</li>{% endfor %}</ul>
+          </div>
+          {% endif %}
+          {% if ar.key_risks %}
+          <div class="sc-list risks">
+            <h4>Risks</h4>
+            <ul>{% for r in ar.key_risks %}<li>{{ r }}</li>{% endfor %}</ul>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+        <div class="confidence-bar">
+          <div class="confidence-fill" style="width:{{ (ar.confidence * 100) | int }}%;"></div>
+        </div>
+        <div class="confidence-label">Confidence: {{ (ar.confidence * 100) | int }}% · {{ ar.article_count }} article{{ 's' if ar.article_count != 1 }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- ⑨ PORTFOLIO SUMMARY -->
+  {% if report.portfolio_summary %}
+  <div class="section">
+    <div class="section-label">Portfolio Health</div>
+    <div class="brief-body">{{ report.portfolio_summary }}</div>
+  </div>
+  {% endif %}
+
+  <!-- ⑩ FOOTER: SOURCES + DISCLAIMER -->
+  <div class="footer">
+    {% if sources %}
+    <div class="sources">
+      <strong>Sources:</strong> {{ sources | join(', ') }}
+    </div>
+    {% endif %}
+    <div class="disclaimer">
+      This newsletter is generated automatically using AI and is for informational purposes only.
+      It does not constitute financial advice, investment recommendations, or solicitation to buy or sell securities.
+      Past performance is not indicative of future results. Always conduct your own research and consult a
+      qualified financial adviser before making investment decisions.
+    </div>
+    <div class="generated">Generated by Financial Bytes · {{ report.report_date.strftime('%B %d, %Y') }}</div>
+  </div>
+
+</div>
+</body>
+</html>

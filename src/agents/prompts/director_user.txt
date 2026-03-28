@@ -1,0 +1,45 @@
+Good morning. Please produce today's portfolio brief.
+
+## Portfolio Overview
+Date: {{ report_date }}
+Total Cost Basis: ${{ total_cost }}
+Current Portfolio Value: ${{ total_value }}
+Total Unrealized P&L: {{ total_pnl_pct }}% (${{ total_pnl_dollars }})
+
+## Global Market Context
+{{ global_market_context }}
+
+## Individual Stock Analyst Reports
+{% for report in analyst_reports %}
+### {{ report.ticker }}
+- Recommendation: {{ report.recommendation }} (Confidence: {{ report.confidence }})
+- Sentiment: {{ report.sentiment_label }} ({{ report.sentiment }})
+- Summary: {{ report.summary }}
+- Key Catalysts: {{ report.key_catalysts | join(', ') }}
+- Key Risks: {{ report.key_risks | join(', ') }}
+- Analyst Consensus: {{ report.analyst_consensus or 'N/A' }} | Price Target: {{ report.price_target or 'N/A' }}
+- Technical Signal: {{ report.technical_signal or 'N/A' }}
+{% endfor %}
+
+---
+
+Produce a JSON object with this exact structure:
+{
+  "market_theme": "<one punchy sentence: the dominant market narrative today>",
+  "five_min_summary": "<300-word executive brief: lead with the theme, contextualize global moves, synthesize what it means for THIS portfolio specifically, end with the clearest action item>",
+  "portfolio_summary": "<150-word overview of portfolio health: P&L context, which positions are working/not working, overall posture>",
+  "global_market_context": "<100-word summary of Asia/London/futures context and its relevance to holdings>",
+  "top_opportunities": [
+    {"ticker": "<ticker>", "signal": "<BUY/HOLD/SELL>", "rationale": "<one sentence>", "short_term": "<1-4 week outlook>", "long_term": "<3-12 month outlook>"}
+  ],
+  "top_risks": [
+    {"ticker": "<ticker>", "risk": "<specific risk>", "severity": "<High/Medium/Low>", "mitigation": "<one sentence>"}
+  ],
+  "action_items": [
+    "<#1 most important thing to watch or consider today>",
+    "<#2>",
+    "<#3 — max 5 items>"
+  ],
+  "overall_sentiment": <float between -1.0 and 1.0>,
+  "overall_recommendation": "<1-2 sentences: overall portfolio posture recommendation today>"
+}

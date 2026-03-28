@@ -1,0 +1,36 @@
+Analyze the following information for {{ ticker }} and produce a structured investment analysis.
+
+## Holding Context
+- Ticker: {{ ticker }}
+- Shares held: {{ shares }}
+- Cost basis: ${{ cost_basis }} per share
+- Purchase date: {{ purchase_date }}
+- Current price: ${{ current_price }}
+- Unrealized P&L: {{ pnl_pct }}% (${{ pnl_dollars }})
+
+## Technical Signals (from massive.com)
+{{ technical_signals }}
+
+## Analyst Ratings (from massive.com)
+{{ analyst_ratings }}
+
+## News Articles ({{ article_count }} articles, most recent first)
+{{ articles_text }}
+
+---
+
+Produce a JSON object with this exact structure:
+{
+  "ticker": "{{ ticker }}",
+  "summary": "<200-word narrative covering: what happened, why it matters, near-term and long-term implications for this specific holding>",
+  "sentiment": <float between -1.0 (very bearish) and 1.0 (very bullish)>,
+  "sentiment_label": "<one of: Very Bullish, Bullish, Neutral, Bearish, Very Bearish>",
+  "recommendation": "<one of: BUY, HOLD, SELL>",
+  "recommendation_context": "<2-3 sentences explaining: (1) what the recommendation means for this specific position, (2) short-term outlook (1-4 weeks), (3) long-term outlook (3-12 months)>",
+  "confidence": <float between 0.0 and 1.0>,
+  "key_catalysts": ["<catalyst 1>", "<catalyst 2>", ...],
+  "key_risks": ["<risk 1>", "<risk 2>", ...],
+  "analyst_consensus": "<analyst consensus rating if available, else null>",
+  "price_target": <analyst consensus price target as float, or null>,
+  "technical_signal": "<one sentence summarizing technical indicator signals>"
+}
