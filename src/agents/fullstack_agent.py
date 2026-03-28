@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from loguru import logger
@@ -16,7 +16,7 @@ def _db_audit() -> dict:
     from src.db.session import get_db
 
     results = {}
-    cutoff_30 = datetime.utcnow() - timedelta(days=30)
+    cutoff_30 = datetime.now(timezone.utc) - timedelta(days=30)
 
     with get_db() as db:
         results["articles_total"] = db.query(Article).count()
@@ -55,8 +55,8 @@ def _cost_audit() -> dict:
     DIRECTOR_INPUT_TOKENS = 3000
     DIRECTOR_OUTPUT_TOKENS = 1500
 
-    cutoff_7 = datetime.utcnow() - timedelta(days=7)
-    cutoff_30 = datetime.utcnow() - timedelta(days=30)
+    cutoff_7 = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff_30 = datetime.now(timezone.utc) - timedelta(days=30)
 
     with get_db() as db:
         analyst_calls_7d = db.query(Summary).filter(Summary.report_date >= cutoff_7.date()).count()

@@ -60,10 +60,12 @@ def _render_markdown(
     analyst_reports: list[AnalystReport],
     snapshot: PortfolioSnapshot,
 ) -> str:
-    # Markdown template uses raw Jinja (no HTML autoescape)
-    from jinja2 import Environment as JinjaEnv, FileSystemLoader as JFL
+    # Markdown template: use SandboxedEnvironment so AI-generated content
+    # cannot execute Jinja2 template logic (prompt-injection-to-template-injection guard).
+    from jinja2.sandbox import SandboxedEnvironment
+    from jinja2 import FileSystemLoader as JFL
 
-    env = JinjaEnv(loader=JFL(str(TEMPLATE_DIR)), autoescape=False)
+    env = SandboxedEnvironment(loader=JFL(str(TEMPLATE_DIR)), autoescape=False)
 
     def format_number(value) -> str:
         try:

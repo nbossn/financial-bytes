@@ -54,8 +54,8 @@ def run_pipeline(
         from src.db.models import Article
         from src.db.session import get_db
         from src.scrapers.base_scraper import ScrapedArticle
-        from datetime import datetime, timedelta
-        cutoff = datetime.utcnow() - timedelta(hours=settings.article_lookback_hours)
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.article_lookback_hours)
         with get_db() as db:
             for holding in holdings:
                 rows = (

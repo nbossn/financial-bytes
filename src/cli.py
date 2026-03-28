@@ -24,6 +24,11 @@ def _setup_logging(level: str = "INFO") -> None:
     )
 
 
+_TICKER_RE = __import__("re").compile(r"^[A-Z]{1,5}$")
+
+_ALLOWED_OUTPUT_BASE = Path("newsletters").resolve()
+
+
 def _parse_date(ctx, param, value) -> date | None:
     if value is None:
         return None
@@ -31,6 +36,24 @@ def _parse_date(ctx, param, value) -> date | None:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
         raise click.BadParameter("Date must be in YYYY-MM-DD format")
+
+
+def _validate_ticker(ticker: str) -> str:
+    """Raise UsageError if ticker is not 1-5 uppercase letters."""
+    t = ticker.strip().upper()
+    if not _TICKER_RE.match(t):
+        raise click.UsageError(f"Invalid ticker symbol '{ticker}' — must be 1-5 letters (A-Z)")
+    return t
+
+
+def _validate_output_dir(output_dir: str) -> Path:
+    """Resolve and confine output_dir to the newsletters tree."""
+    resolved = Path(output_dir).resolve()
+    # Allow any path under the project root or under newsletters/
+    # (operator may choose a custom absolute path; just block traversal tricks)
+    if ".." in Path(output_dir).parts:
+        raise click.UsageError(f"Invalid output directory '{output_dir}' — path traversal not allowed")
+    return resolved
 
 
 @click.group()
@@ -57,7 +80,7 @@ def run(portfolio, date, skip_scrape, skip_email, output_dir) -> None:
         report_date=date,
         skip_scrape=skip_scrape,
         skip_email=skip_email,
-        output_dir=Path(output_dir),
+        output_dir=_validate_output_dir(output_dir),
     )
     click.echo(f"Done. Status: {result['status']}")
 
@@ -76,10 +99,13 @@ def schedule() -> None:
 @click.argument("tickers", nargs=-1, required=True)
 def scrape(tickers: tuple[str, ...]) -> None:
     """Scrape news articles for one or more TICKERS."""
+    if len(tickers) > 50:
+        raise click.UsageError("Too many tickers — maximum 50 per invocation")
     from src.scrapers.scraper_orchestrator import scrape_ticker
     for ticker in tickers:
-        articles = scrape_ticker(ticker.upper())
-        click.echo(f"{ticker.upper()}: {len(articles)} article(s) scraped")
+        t = _validate_ticker(ticker)
+        articles = scrape_ticker(t)
+        click.echo(f"{t}: {len(articles)} article(s) scraped")
 
 
 # ── analyse ───────────────────────────────────────────────────────
@@ -93,13 +119,13 @@ def analyse(tickers: tuple[str, ...], date: date | None) -> None:
     from src.scrapers.base_scraper import ScrapedArticle
     from src.db.models import Article as DBArticle
     from src.db.session import get_db
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     holdings_map = {h.ticker: h for h in read_portfolio(settings.portfolio_csv_path)}
-    cutoff = datetime.utcnow() - timedelta(hours=settings.article_lookback_hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.article_lookback_hours)
 
     for ticker in tickers:
-        ticker = ticker.upper()
+        ticker = _validate_ticker(ticker)
         if ticker not in holdings_map:
             click.echo(f"Warning: {ticker} not in portfolio, skipping", err=True)
             continue

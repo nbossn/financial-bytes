@@ -107,8 +107,14 @@ def send_newsletter(
         _update_db_status(report_date, "sent")
         logger.info(f"Newsletter delivered to {len(to_list)} recipient(s)")
         return True
+    except smtplib.SMTPAuthenticationError:
+        # Do NOT log the exception object — it may echo back SMTP server error
+        # strings that include credential fragments in some configurations.
+        logger.error("Newsletter delivery failed: SMTP authentication rejected — check SMTP_USER/SMTP_PASS")
+        _update_db_status(report_date, "failed")
+        return False
     except Exception as exc:
-        logger.error(f"Newsletter delivery failed: {exc}")
+        logger.error(f"Newsletter delivery failed: {type(exc).__name__}")
         _update_db_status(report_date, "failed")
         return False
 

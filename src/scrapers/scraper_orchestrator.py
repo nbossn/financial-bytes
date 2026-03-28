@@ -24,7 +24,7 @@ MIN_ARTICLES_BEFORE_FALLBACK = 3
 
 
 def _url_hash(url: str) -> str:
-    return hashlib.md5(url.encode()).hexdigest()
+    return hashlib.sha256(url.encode()).hexdigest()
 
 
 def _deduplicate(articles: list[ScrapedArticle]) -> list[ScrapedArticle]:
