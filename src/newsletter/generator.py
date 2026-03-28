@@ -149,8 +149,7 @@ def _save_newsletter(
             data = dict(
                 html_content=html_content,
                 markdown_content=md_content,
-                pdf_path=str(pdf_path) if pdf_path else None,
-                status="generated",
+                file_path=str(pdf_path) if pdf_path else None,
             )
             if existing:
                 for k, v in data.items():

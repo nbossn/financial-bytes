@@ -1,4 +1,5 @@
 """Endpoint wrappers for massive.com API."""
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -163,12 +164,17 @@ class MassiveEndpoints:
             return None
 
     def get_ticker_signals(self, ticker: str, lookback_hours: int | None = None) -> TickerSignals:
-        """Fetch all signals for a ticker in one call."""
+        """Fetch all signals for a ticker — 4 endpoints run in parallel."""
         logger.info(f"Fetching massive.com signals for {ticker}")
-        quote = self.get_quote(ticker)
-        news = self.get_news(ticker, lookback_hours)
-        ratings = self.get_analyst_ratings(ticker)
-        technicals = self.get_technicals(ticker)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            q_fut = pool.submit(self.get_quote, ticker)
+            n_fut = pool.submit(self.get_news, ticker, lookback_hours)
+            r_fut = pool.submit(self.get_analyst_ratings, ticker)
+            t_fut = pool.submit(self.get_technicals, ticker)
+            quote = q_fut.result()
+            news = n_fut.result()
+            ratings = r_fut.result()
+            technicals = t_fut.result()
 
         # Compute consensus
         consensus_rating = None

@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from decimal import Decimal
 
+from datetime import timezone
+
 from sqlalchemy import (
     Boolean,
     Column,
@@ -11,9 +13,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import JSON as JSONB
+
+_now = lambda: datetime.now(timezone.utc).replace(tzinfo=None)  # noqa: E731
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -29,7 +32,7 @@ class Portfolio(Base):
     shares = Column(Numeric(15, 4), nullable=False)
     cost_basis = Column(Numeric(15, 4), nullable=False)
     purchase_date = Column(Date, nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=_now)
 
 
 class Article(Base):
@@ -43,7 +46,7 @@ class Article(Base):
     body = Column(Text)
     snippet = Column(Text)
     published_at = Column(DateTime, index=True)
-    scraped_at = Column(DateTime, server_default=func.now())
+    scraped_at = Column(DateTime, default=_now)
 
 
 class ApiSignal(Base):
@@ -60,7 +63,7 @@ class ApiSignal(Base):
     price_target = Column(Numeric(15, 4))
     benzinga_sentiment = Column(Numeric(4, 3))
     raw_data = Column(JSONB)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=_now)
 
     __table_args__ = (UniqueConstraint("ticker", "signal_date", name="uq_signal_ticker_date"),)
 
@@ -81,7 +84,7 @@ class Summary(Base):
     price_target = Column(Numeric(15, 4))
     technical_signal = Column(String(200))
     article_count = Column(Integer)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=_now)
 
     __table_args__ = (UniqueConstraint("ticker", "report_date", name="uq_summary_ticker_date"),)
 
@@ -99,7 +102,7 @@ class Recommendation(Base):
     top_opportunities = Column(JSONB)
     top_risks = Column(JSONB)
     overall_sentiment = Column(Numeric(4, 3))
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=_now)
 
 
 class Newsletter(Base):
@@ -112,7 +115,7 @@ class Newsletter(Base):
     file_path = Column(String(500))
     email_sent = Column(Boolean, default=False)
     email_sent_at = Column(DateTime)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=_now)
 
 
 class ScrapeLog(Base):
@@ -125,4 +128,4 @@ class ScrapeLog(Base):
     success = Column(Boolean)
     error_message = Column(Text)
     duration_ms = Column(Integer)
-    scraped_at = Column(DateTime, server_default=func.now())
+    scraped_at = Column(DateTime, default=_now)

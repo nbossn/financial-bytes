@@ -159,3 +159,27 @@ def scrape_all_tickers(tickers: list[str]) -> dict[str, list[ScrapedArticle]]:
     for ticker in tickers:
         results[ticker] = scrape_ticker(ticker)
     return results
+
+
+def scrape_tickers_parallel(
+    tickers: list[str],
+    max_workers: int = 3,
+) -> dict[str, list[ScrapedArticle]]:
+    """Scrape multiple tickers concurrently.
+
+    max_workers controls how many browser (Selenium) instances run at once.
+    Values above 3 risk RAM exhaustion on typical VPS hardware.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: dict[str, list[ScrapedArticle]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {pool.submit(scrape_ticker, t): t for t in tickers}
+        for future in as_completed(future_map):
+            ticker = future_map[future]
+            try:
+                results[ticker] = future.result()
+            except Exception as e:
+                logger.error(f"Scrape failed for {ticker}: {e}")
+                results[ticker] = []
+    return results

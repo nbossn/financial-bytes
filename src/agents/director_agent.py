@@ -4,7 +4,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-import anthropic
+import subprocess
+
 from jinja2 import Template
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -96,14 +97,13 @@ def _build_user_prompt(
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
+    result = subprocess.run(
+        ["claude", "-p", user_prompt, "--system-prompt", SYSTEM_PROMPT],
+        capture_output=True, text=True, timeout=300,
     )
-    return message.content[0].text
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
+    return result.stdout.strip()
 
 
 def synthesize_portfolio(

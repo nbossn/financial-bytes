@@ -1,11 +1,13 @@
 """Financial Analyst Agent — per-ticker article analysis using claude-haiku-4-5."""
+import asyncio
 import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from string import Template
 
-import anthropic
+import subprocess
+
 from loguru import logger
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -107,14 +109,13 @@ def _build_user_prompt(
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
+    result = subprocess.run(
+        ["claude", "-p", user_prompt, "--system-prompt", SYSTEM_PROMPT],
+        capture_output=True, text=True, timeout=180,
     )
-    return message.content[0].text
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
+    return result.stdout.strip()
 
 
 def analyze_ticker(
@@ -164,6 +165,101 @@ def analyze_ticker(
     _save_report(report)
     logger.info(f"Analyst report: {holding.ticker} → {report.recommendation} (confidence: {report.confidence:.0%})")
     return report
+
+
+async def _call_claude_async(user_prompt: str) -> str:
+    """Async subprocess wrapper for claude -p with retry."""
+    for attempt in range(5):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "-p", user_prompt, "--system-prompt", SYSTEM_PROMPT,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise RuntimeError("claude CLI timed out after 180s")
+            if proc.returncode != 0:
+                raise RuntimeError(f"claude CLI error: {stderr.decode()[:500]}")
+            return stdout.decode().strip()
+        except Exception as e:
+            if attempt == 4:
+                raise
+            wait = min(2 ** attempt, 32)
+            logger.warning(f"claude CLI attempt {attempt + 1} failed: {e} — retrying in {wait}s")
+            await asyncio.sleep(wait)
+    raise RuntimeError("unreachable")
+
+
+async def analyze_ticker_async(
+    holding: "Holding",
+    articles: list,
+    signals=None,
+    report_date: date | None = None,
+) -> AnalystReport:
+    """Async version of analyze_ticker — use with asyncio.gather for parallel execution."""
+    today = report_date or date.today()
+    current_price = signals.quote.current_price if signals and signals.quote else None
+    user_prompt = _build_user_prompt(holding, articles, signals, current_price)
+
+    logger.info(f"Analyst agent (async): {holding.ticker} ({len(articles)} articles)")
+
+    try:
+        raw_json = await _call_claude_async(user_prompt)
+        raw_json = raw_json.strip()
+        if raw_json.startswith("```"):
+            raw_json = raw_json.split("```")[1]
+            if raw_json.startswith("json"):
+                raw_json = raw_json[4:]
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as e:
+        logger.error(f"Analyst agent JSON parse error for {holding.ticker}: {e}")
+        data = {
+            "ticker": holding.ticker,
+            "summary": "Analysis unavailable due to parsing error.",
+            "sentiment": 0.0,
+            "sentiment_label": "Neutral",
+            "recommendation": "HOLD",
+            "recommendation_context": "Insufficient data to make a recommendation.",
+            "confidence": 0.1,
+            "key_catalysts": [],
+            "key_risks": ["Analysis error — manual review recommended"],
+        }
+
+    report = AnalystReport(
+        ticker=holding.ticker,
+        report_date=today,
+        article_count=len(articles),
+        **{k: v for k, v in data.items() if k != "ticker"},
+    )
+    _save_report(report)
+    logger.info(f"Analyst report: {holding.ticker} → {report.recommendation} ({report.confidence:.0%})")
+    return report
+
+
+async def run_analysts_parallel(
+    holdings: list,
+    all_articles: dict,
+    ticker_signals: dict,
+    report_date: date | None = None,
+    max_concurrent: int = 5,
+) -> list[AnalystReport]:
+    """Run analyst agents for all holdings concurrently, bounded by a semaphore."""
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def _bounded(holding):
+        async with sem:
+            return await analyze_ticker_async(
+                holding,
+                all_articles.get(holding.ticker, []),
+                ticker_signals.get(holding.ticker),
+                report_date=report_date,
+            )
+
+    return list(await asyncio.gather(*[_bounded(h) for h in holdings]))
 
 
 def _save_report(report: AnalystReport) -> None:

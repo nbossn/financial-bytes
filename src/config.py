@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     max_articles_per_ticker: int = Field(15, alias="MAX_ARTICLES_PER_TICKER")
     article_lookback_hours: int = Field(24, alias="ARTICLE_LOOKBACK_HOURS")
 
+    # Parallelism
+    max_parallel_tickers: int = Field(3, alias="MAX_PARALLEL_TICKERS")
+    max_parallel_analysts: int = Field(5, alias="MAX_PARALLEL_ANALYSTS")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     log_file: str = Field("logs/financial_bytes.log", alias="LOG_FILE")

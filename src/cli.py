@@ -68,21 +68,100 @@ def cli(log_level: str) -> None:
 # ── run ───────────────────────────────────────────────────────────
 @cli.command()
 @click.option("--portfolio", "-p", default=None, help="Path to portfolio CSV")
+@click.option("--transactions", "-t", default=None,
+              help="Path to Robinhood transaction CSV (builds portfolio on the fly)")
 @click.option("--date", "-d", default=None, callback=_parse_date, help="Report date (YYYY-MM-DD)")
 @click.option("--skip-scrape", is_flag=True, help="Use cached articles from DB")
 @click.option("--skip-email", is_flag=True, help="Generate newsletter but don't send email")
 @click.option("--output-dir", default="newsletters", show_default=True, help="Output directory")
-def run(portfolio, date, skip_scrape, skip_email, output_dir) -> None:
-    """Run the full pipeline: scrape → analyse → newsletter → email."""
-    from src.pipeline.main_pipeline import run_pipeline
-    result = run_pipeline(
-        portfolio_csv=portfolio,
-        report_date=date,
-        skip_scrape=skip_scrape,
-        skip_email=skip_email,
-        output_dir=_validate_output_dir(output_dir),
-    )
+def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir) -> None:
+    """Run the full pipeline: scrape → analyse → newsletter → email.
+
+    Portfolio source (pick one):
+      --portfolio   existing portfolio CSV (ticker, shares, cost_basis, purchase_date)
+      --transactions  Robinhood activity export CSV (holdings computed automatically)
+    """
+    if transactions and portfolio:
+        raise click.UsageError("Specify either --portfolio or --transactions, not both.")
+
+    if transactions:
+        # Derive a temporary portfolio CSV from the transaction history
+        from src.portfolio.transaction_reader import read_transactions, export_holdings_to_csv
+        import tempfile, os
+
+        txn_path = Path(transactions)
+        if not txn_path.exists():
+            raise click.BadParameter(f"Transaction file not found: {txn_path}", param_hint="--transactions")
+
+        holdings = read_transactions(txn_path)
+        click.echo(f"Derived {len(holdings)} holdings from transactions: {[h.ticker for h in holdings]}")
+
+        # Write to a temp portfolio CSV and hand off to the pipeline
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_") as tmp:
+            tmp_path = tmp.name
+        try:
+            export_holdings_to_csv(holdings, tmp_path)
+            portfolio = tmp_path
+            from src.pipeline.main_pipeline import run_pipeline
+            result = run_pipeline(
+                portfolio_csv=portfolio,
+                report_date=date,
+                skip_scrape=skip_scrape,
+                skip_email=skip_email,
+                output_dir=_validate_output_dir(output_dir),
+            )
+        finally:
+            os.unlink(tmp_path)
+    else:
+        from src.pipeline.main_pipeline import run_pipeline
+        result = run_pipeline(
+            portfolio_csv=portfolio,
+            report_date=date,
+            skip_scrape=skip_scrape,
+            skip_email=skip_email,
+            output_dir=_validate_output_dir(output_dir),
+        )
+
     click.echo(f"Done. Status: {result['status']}")
+
+
+# ── import-transactions ───────────────────────────────────────────
+@cli.command("import-transactions")
+@click.argument("csv_path", type=click.Path(exists=True))
+@click.option("--output", "-o", default=None,
+              help="Write derived portfolio to this file (default: overwrites portfolio.csv)")
+@click.option("--dry-run", is_flag=True,
+              help="Print derived holdings without writing any files")
+def import_transactions(csv_path: str, output: str | None, dry_run: bool) -> None:
+    """Derive current holdings from a Robinhood transaction CSV.
+
+    Parses all Buy/Sell rows, computes net shares and weighted average
+    cost basis per ticker, and writes a portfolio CSV ready for `run`.
+
+    CSV_PATH: path to the Robinhood activity export file.
+    """
+    from src.portfolio.transaction_reader import read_transactions, export_holdings_to_csv
+
+    holdings = read_transactions(Path(csv_path))
+
+    click.echo(f"Derived {len(holdings)} open holdings:\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>12} {'AVG COST':>12} {'TOTAL COST':>14}  FIRST BUY")
+    click.echo("  " + "-" * 58)
+    for h in holdings:
+        first_buy = str(h.purchase_date) if h.purchase_date else "unknown"
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>12.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}  {first_buy}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    dest = Path(output) if output else Path(settings.portfolio_csv_path)
+    export_holdings_to_csv(holdings, dest)
+    click.echo(f"\nPortfolio written to {dest}")
 
 
 # ── schedule ──────────────────────────────────────────────────────
