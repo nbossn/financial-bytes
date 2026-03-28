@@ -103,18 +103,34 @@ def _build_user_prompt(
     return prompt
 
 
+_RATE_LIMIT_SIGNALS = ("rate limit", "429", "overloaded", "529")
+
+
+def _is_rate_limit_error(stderr: str) -> bool:
+    low = stderr.lower()
+    return any(s in low for s in _RATE_LIMIT_SIGNALS)
+
+
 @retry(
-    wait=wait_exponential(multiplier=1, min=1, max=32),
+    wait=wait_exponential(multiplier=2, min=5, max=60),
     stop=stop_after_attempt(5),
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
     result = subprocess.run(
-        ["claude", "-p", user_prompt, "--system-prompt", SYSTEM_PROMPT],
+        [
+            "claude", "-p", user_prompt,
+            "--model", MODEL,
+            "--system-prompt", SYSTEM_PROMPT,
+            "--dangerously-skip-permissions",
+        ],
         capture_output=True, text=True, timeout=180,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
+        err = result.stderr[:500]
+        if _is_rate_limit_error(err):
+            raise RuntimeError(f"Rate limit hit: {err}")
+        raise RuntimeError(f"claude CLI error: {err}")
     return result.stdout.strip()
 
 
@@ -172,7 +188,10 @@ async def _call_claude_async(user_prompt: str) -> str:
     for attempt in range(5):
         try:
             proc = await asyncio.create_subprocess_exec(
-                "claude", "-p", user_prompt, "--system-prompt", SYSTEM_PROMPT,
+                "claude", "-p", user_prompt,
+                "--model", MODEL,
+                "--system-prompt", SYSTEM_PROMPT,
+                "--dangerously-skip-permissions",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -183,13 +202,15 @@ async def _call_claude_async(user_prompt: str) -> str:
                 await proc.communicate()
                 raise RuntimeError("claude CLI timed out after 180s")
             if proc.returncode != 0:
-                raise RuntimeError(f"claude CLI error: {stderr.decode()[:500]}")
+                err = stderr.decode()[:500]
+                raise RuntimeError(f"{'Rate limit hit' if _is_rate_limit_error(err) else 'claude CLI error'}: {err}")
             return stdout.decode().strip()
         except Exception as e:
             if attempt == 4:
                 raise
-            wait = min(2 ** attempt, 32)
-            logger.warning(f"claude CLI attempt {attempt + 1} failed: {e} — retrying in {wait}s")
+            is_rate_limit = _is_rate_limit_error(str(e))
+            wait = min(2 ** (attempt + 1) * (3 if is_rate_limit else 1), 60)
+            logger.warning(f"claude CLI attempt {attempt + 1} failed ({'rate limit' if is_rate_limit else 'error'}): {e} — retrying in {wait}s")
             await asyncio.sleep(wait)
     raise RuntimeError("unreachable")
 

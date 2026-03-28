@@ -91,18 +91,34 @@ def _build_user_prompt(
     )
 
 
+_RATE_LIMIT_SIGNALS = ("rate limit", "429", "overloaded", "529")
+
+
+def _is_rate_limit_error(stderr: str) -> bool:
+    low = stderr.lower()
+    return any(s in low for s in _RATE_LIMIT_SIGNALS)
+
+
 @retry(
-    wait=wait_exponential(multiplier=1, min=2, max=60),
+    wait=wait_exponential(multiplier=2, min=5, max=120),
     stop=stop_after_attempt(5),
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
     result = subprocess.run(
-        ["claude", "-p", user_prompt, "--system-prompt", SYSTEM_PROMPT],
+        [
+            "claude", "-p", user_prompt,
+            "--model", MODEL,
+            "--system-prompt", SYSTEM_PROMPT,
+            "--dangerously-skip-permissions",
+        ],
         capture_output=True, text=True, timeout=300,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
+        err = result.stderr[:500]
+        if _is_rate_limit_error(err):
+            raise RuntimeError(f"Rate limit hit: {err}")
+        raise RuntimeError(f"claude CLI error: {err}")
     return result.stdout.strip()
 
 
