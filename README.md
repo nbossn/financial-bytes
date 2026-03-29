@@ -2,7 +2,7 @@
 
 Automated daily stock portfolio newsletter powered by AI agents. Scrapes financial news from seven sources, analyzes articles per holding using Claude AI, and delivers a 5-minute executive brief to your inbox before market open.
 
-Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching, and AI analysis pipeline.
+Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching, and AI analysis pipeline. Natively imports Fidelity positions exports, supports multiple named portfolios, and tracks per-lot capital gains tax exposure.
 
 ---
 
@@ -12,6 +12,8 @@ Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching,
 - [How Data Is Collected and Used](#how-data-is-collected-and-used)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [Multi-Portfolio Setup](#multi-portfolio-setup)
+- [Per-Lot Tax Tracking](#per-lot-tax-tracking)
 - [Parallelism & Performance](#parallelism--performance)
 - [Usage](#usage)
 - [Examples](#examples)
@@ -27,12 +29,12 @@ Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching,
 
 Each morning before NYSE open, Financial Bytes runs an automated pipeline:
 
-1. **Loads your portfolio** from a CSV file — either a hand-maintained `portfolio.csv` or derived automatically from a Robinhood transaction export
+1. **Loads your portfolio** from one of four sources: a hand-maintained `portfolio.csv`, a Robinhood transaction export, a Fidelity positions export, or a named portfolio definition in `portfolios.json`
 2. **Scrapes financial news** from Finviz, Yahoo Finance, CNBC, MarketWatch, Morningstar, Reuters, and Seeking Alpha for every holding — **tickers scraped in parallel**
 3. **Fetches structured signals** from massive.com — analyst ratings, price targets, technical indicators, and Benzinga news sentiment — **all 4 endpoint calls per ticker run concurrently, and all tickers run in parallel**
 4. **Runs an Analyst AI agent** (Claude Haiku) per ticker — reads articles and produces a BUY/HOLD/SELL recommendation, confidence score, sentiment label, key catalysts, and risk factors — **all tickers analyzed concurrently** (bounded semaphore to respect rate limits)
 5. **Runs a Director AI agent** (Claude Sonnet) that synthesizes all per-stock reports into a portfolio-level brief with a market theme, 5-minute summary, top opportunities, and prioritized action items
-6. **Generates a newsletter** in HTML, Markdown, and PDF formats with portfolio P&L, per-stock analysis cards, and an action checklist
+6. **Generates a newsletter** in HTML, Markdown, and PDF formats with portfolio P&L, a tax efficiency section (per-lot capital gains estimates and tax-loss harvesting candidates), collapsible per-stock analysis cards, and an action checklist
 7. **Delivers via Gmail SMTP** to your inbox by 7:30 AM ET
 8. **Archives the newsletter** to a GitHub repository (optional)
 
@@ -64,7 +66,7 @@ All scraped data is stored in a local PostgreSQL database (`financial_bytes`):
 - **Newsletters** — delivery status (sent/failed), file paths
 - **Scrape logs** — per-source success/failure and article counts
 
-**Your portfolio data (tickers, shares, cost basis) is never sent to external services.** It is read from your local `portfolio.csv` file and stored only in your local database.
+**Your portfolio data (tickers, shares, cost basis, purchase dates) is never sent to external services.** It is read from local files and stored only in your local database.
 
 ### What Is Sent to AI APIs
 
@@ -159,6 +161,29 @@ poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.
 
 The importer parses all `Buy`/`Sell` rows, computes net shares and weighted average cost basis per ticker, and writes a standard `portfolio.csv` ready for `run`.
 
+**Option C — Fidelity positions export (recommended for Fidelity accounts):**
+
+Export your positions from Fidelity (`Accounts & Trade > Portfolio > Download`). The file is named `Portfolio_Positions_<date>.csv`. Point your portfolio definition at it in `portfolios.json` (see [Multi-Portfolio Setup](#multi-portfolio-setup)):
+
+```json
+{
+  "name": "my-fidelity",
+  "label": "My Fidelity Account",
+  "fidelity_positions": "/path/to/Portfolio_Positions_Mar-28-2026.csv",
+  "email_recipients": ["you@example.com"]
+}
+```
+
+Money market funds (SPAXX, FZDXX, FZAXX) are detected automatically and handled at $1.00 NAV — no manual adjustment needed. Run the pipeline with:
+
+```bash
+poetry run python -m src.cli run --portfolio-name my-fidelity --skip-email
+```
+
+**Option D — Multi-portfolio via `portfolios.json`:**
+
+For multiple accounts or named portfolios, define them all in `portfolios.json` at the project root (see [Multi-Portfolio Setup](#multi-portfolio-setup)). Each portfolio can have its own data source, email recipients, and purchase history file.
+
 ### 5. Initialize the Database
 
 ```bash
@@ -244,6 +269,111 @@ LOG_FILE=logs/financial_bytes.log
 2. Search for "App passwords"
 3. Create a new app password for "Mail"
 4. Use the 16-character password as `SMTP_PASS`
+
+---
+
+## Multi-Portfolio Setup
+
+Financial Bytes supports multiple named portfolios via `portfolios.json` at the project root. Each entry can use a different data source, email recipients, and purchase history file.
+
+### `portfolios.json` Format
+
+```json
+[
+  {
+    "name": "default",
+    "label": "My Portfolio",
+    "csv_path": "portfolio.csv",
+    "email_recipients": ["you@example.com"]
+  },
+  {
+    "name": "trust",
+    "label": "Family Trust",
+    "fidelity_positions": "/path/to/Portfolio_Positions_Mar-28-2026.csv",
+    "purchase_history": "data/trust_purchase_history.json",
+    "email_recipients": ["trustee@example.com"]
+  },
+  {
+    "name": "robinhood",
+    "label": "Robinhood Account",
+    "transactions_path": "/path/to/robinhood_activity.csv",
+    "email_recipients": []
+  }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Identifier used with `--portfolio-name` CLI flag |
+| `label` | No | Human-readable name shown in newsletter header |
+| `csv_path` | One of these | Path to a hand-maintained `portfolio.csv` |
+| `fidelity_positions` | One of these | Path to a Fidelity positions export CSV |
+| `transactions_path` | One of these | Path to a Robinhood transactions CSV |
+| `email_recipients` | No | Override the default `EMAIL_RECIPIENT` from `.env` |
+| `purchase_history` | No | Path to a per-lot purchase history JSON (see below) |
+
+### Running a Specific Portfolio
+
+```bash
+# Run the pipeline for a named portfolio
+poetry run python -m src.cli run --portfolio-name trust --skip-email
+
+# List all configured portfolios
+poetry run python -m src.cli portfolios
+```
+
+---
+
+## Per-Lot Tax Tracking
+
+Financial Bytes can track your holdings at the individual tax lot level, giving you accurate short-term vs. long-term capital gains classification and flagging tax-loss harvesting opportunities in the newsletter.
+
+### Why It Matters
+
+When you buy the same stock at different times and prices, each purchase is a separate tax lot. The IRS taxes gains on lots held **less than one year** as ordinary income (22–37%), while lots held **one year or more** qualify for the lower long-term capital gains rate (15–20%). Mixing these up can significantly overstate or understate your tax exposure.
+
+### Tax Efficiency Section in the Newsletter
+
+The newsletter includes a **Tax Efficiency** section before the Analyst Ratings Desk that shows:
+
+- Per-lot unrealized gains/losses with holding period labels (Short-Term / Long-Term)
+- Estimated tax range at your bracket (e.g., `$12,400–$18,500`)
+- **Tax-loss harvesting candidates** — positions with unrealized losses you could realize to offset gains
+
+### Setting Up Purchase History
+
+Create a JSON file at `data/<portfolio-name>_purchase_history.json` and reference it in `portfolios.json` via the `purchase_history` field:
+
+```json
+{
+  "_comment": "Keys starting with _ are ignored. Empty arrays are skipped.",
+  "MSFT": [
+    {"shares": null, "cost_basis": 296.20, "purchase_date": "2021-08-01"}
+  ],
+  "NVDA": [
+    {"shares": 1000, "cost_basis": 143.35, "purchase_date": "2025-06-16"},
+    {"shares": 4000, "cost_basis": 44.50, "purchase_date": "2023-06-15"}
+  ],
+  "AAPL": [
+    {"shares": 50, "cost_basis": 178.90, "purchase_date": "2024-03-15"}
+  ],
+  "SPAXX": []
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `shares` | number or `null` | Shares in this lot. Use `null` to assign all remaining shares (useful for single-lot holdings) |
+| `cost_basis` | number | Per-share cost basis for this lot |
+| `purchase_date` | YYYY-MM-DD | Date of purchase — determines short vs. long-term classification |
+
+**Tips:**
+- A ticker can have multiple lot entries — list them in any order
+- Tickers omitted from this file fall back to the aggregated holding's purchase date from the portfolio CSV
+- Set a ticker to `[]` (empty array) to explicitly skip it from tax calculations (useful for money markets like SPAXX)
+- Fidelity exports don't include individual lot dates — use this file to supply accurate dates from your brokerage statements
+
+The earliest lot date for each ticker is also passed to the Analyst agent, so it can provide accurate holding period context in its analysis.
 
 ---
 
@@ -371,6 +501,20 @@ poetry run python -m src.cli run
 | `make migrate` | Run pending database migrations |
 | `make db-shell` | Open a psql shell to the database |
 
+### Multi-Portfolio Commands
+
+```bash
+# List all portfolios defined in portfolios.json
+poetry run python -m src.cli portfolios
+
+# Run a specific named portfolio
+poetry run python -m src.cli run --portfolio-name trust
+poetry run python -m src.cli run --portfolio-name trust --skip-email
+
+# Import a Fidelity positions file (one-shot preview)
+poetry run python -m src.cli fidelity-import /path/to/Portfolio_Positions_Mar-28-2026.csv --dry-run
+```
+
 ### CLI Reference
 
 ```bash
@@ -382,10 +526,22 @@ poetry run python -m src.cli run \
   --skip-email \        # Generate but don't send
   --output-dir newsletters/custom
 
+# Full pipeline — named portfolio from portfolios.json
+poetry run python -m src.cli run --portfolio-name trust --skip-email
+
+# Full pipeline — Fidelity positions export (via portfolios.json definition)
+poetry run python -m src.cli run --portfolio-name my-fidelity --skip-email
+
 # Full pipeline — derive portfolio from Robinhood transaction CSV
 poetry run python -m src.cli run \
   --transactions ~/Downloads/robinhood_activity.csv \
   --skip-email
+
+# List all configured portfolios
+poetry run python -m src.cli portfolios
+
+# Import a Fidelity positions file (preview)
+poetry run python -m src.cli fidelity-import /path/to/Portfolio_Positions_Mar-28-2026.csv --dry-run
 
 # Import transactions and write portfolio.csv (one-time setup or refresh)
 poetry run python -m src.cli import-transactions ~/Downloads/robinhood_activity.csv
@@ -466,6 +622,61 @@ poetry run python -m src.cli run --transactions ~/Downloads/robinhood_activity.c
 poetry run python -m src.cli run --portfolio /path/to/my-portfolio.csv --skip-email
 ```
 
+### Example: Fidelity Import
+
+```bash
+# 1. Download your Fidelity positions (Accounts & Trade > Portfolio > Download)
+#    File name: Portfolio_Positions_Mar-28-2026.csv
+
+# 2. Add to portfolios.json:
+#    { "name": "fidelity", "fidelity_positions": "/path/to/Portfolio_Positions_Mar-28-2026.csv" }
+
+# 3. Preview what will be loaded (no pipeline run)
+poetry run python -m src.cli fidelity-import /path/to/Portfolio_Positions_Mar-28-2026.csv --dry-run
+# → MSFT: 100.000 shares @ $296.20
+# → NVDA: 5000.000 shares @ $78.00 (blended avg)
+# → SPAXX: 12500.000 shares @ $1.00 [money market]
+
+# 4. Run the full pipeline
+poetry run python -m src.cli run --portfolio-name fidelity --skip-email
+```
+
+### Example: Multi-Portfolio with Named Recipients
+
+```bash
+# portfolios.json excerpt:
+# { "name": "trust", "label": "Family Trust", "fidelity_positions": "...",
+#   "purchase_history": "data/trust_purchase_history.json",
+#   "email_recipients": ["trustee@example.com", "advisor@example.com"] }
+
+# Run the trust portfolio — sends to its own recipients
+poetry run python -m src.cli run --portfolio-name trust
+
+# Run both portfolios (e.g., in a cron job)
+poetry run python -m src.cli run --portfolio-name default
+poetry run python -m src.cli run --portfolio-name trust
+```
+
+### Example: Setting Up Per-Lot Tax Tracking
+
+```bash
+# 1. Create data/trust_purchase_history.json (see Per-Lot Tax Tracking section)
+# 2. Reference it in portfolios.json via "purchase_history" field
+# 3. Run the pipeline — newsletter will include per-lot Tax Efficiency section:
+
+#   Tax Efficiency
+#   ─────────────────────────────────────────
+#   NVDA  4000 sh  Long-Term (≥1yr)   +$342,000  est. tax $51,300–$68,400
+#   NVDA  1000 sh  Short-Term (<1yr)  -$79,250   harvesting candidate ✓
+#   GOOG  2000 sh  Long-Term (≥1yr)   +$198,400  est. tax $29,760–$39,680
+#   GOOG   500 sh  Short-Term (<1yr)  +$5,120    est. tax $1,126–$1,894
+#   ─────────────────────────────────────────
+#   Total unrealized gain:  $466,270
+#   Estimated tax (low):    $82,186
+#   Estimated tax (high):   $109,974
+#   Harvestable losses:     -$79,250
+```
+
 ### Example: Regenerating a Past Newsletter
 
 ```bash
@@ -532,12 +743,14 @@ With default parallelism settings on a 15-ticker portfolio:
 ## Architecture
 
 ```
-portfolio.csv  ─or─  robinhood_transactions.csv
-     │                        │
-     │                  transaction_reader.py
-     │                  (net shares, avg cost basis)
-     ▼                        │
-[main_pipeline.py] ◀──────────┘
+portfolio.csv  ─or─  robinhood_transactions.csv  ─or─  fidelity_positions.csv  ─or─  portfolios.json
+     │                        │                               │                            │
+     │                  transaction_reader.py          fidelity_reader.py          portfolio_config.py
+     │                  (net shares, avg cost)         (money market auto-detect)  (named portfolios)
+     ▼                        │                               │                            │
+[main_pipeline.py] ◀──────────┴───────────────────────────────┴────────────────────────────┘
+     │    ↑
+     │  purchase_history.json (per-lot dates → tax_calculator.py + analyst context)
      │
      ├─▶ Phase 2: Scraping (parallel across tickers) ─────────────────┐
      │   ThreadPoolExecutor(MAX_PARALLEL_TICKERS=3)                   │
@@ -576,9 +789,13 @@ portfolio.csv  ─or─  robinhood_transactions.csv
 | Module | Purpose |
 |--------|---------|
 | `src/config.py` | All settings (Pydantic) — reads from `.env` |
-| `src/pipeline/main_pipeline.py` | Pipeline orchestrator — all 4 parallel phases |
+| `src/pipeline/main_pipeline.py` | Pipeline orchestrator — all phases + purchase history loading |
 | `src/portfolio/reader.py` | CSV parser, DB persistence |
+| `src/portfolio/models.py` | `Holding`, `PortfolioSnapshot` dataclasses (incl. `lot_overrides`) |
+| `src/portfolio/portfolio_config.py` | `portfolios.json` loader — multi-portfolio definitions |
 | `src/portfolio/transaction_reader.py` | Robinhood activity CSV parser |
+| `src/portfolio/fidelity_reader.py` | Fidelity positions CSV parser — money market auto-detection |
+| `src/portfolio/tax_calculator.py` | Per-lot capital gains estimator — short/long-term classification |
 | `src/scrapers/scraper_orchestrator.py` | Multi-source scraping + parallel ticker dispatch |
 | `src/api/endpoints.py` | massive.com REST client — parallel signal fetching |
 | `src/agents/analyst_agent.py` | Analyst agent — async subprocess pool + semaphore |

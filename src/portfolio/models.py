@@ -31,6 +31,9 @@ class PortfolioSnapshot:
     holdings: list[Holding]
     prices: dict[str, Decimal] = field(default_factory=dict)  # ticker -> current price
     as_of: date | None = None
+    # Optional per-lot overrides keyed by ticker: list of {"shares", "cost_basis", "purchase_date"} dicts
+    # When present, tax_summary uses these instead of the aggregated Holding for that ticker.
+    lot_overrides: dict[str, list[dict]] = field(default_factory=dict)
 
     @property
     def total_cost(self) -> Decimal:

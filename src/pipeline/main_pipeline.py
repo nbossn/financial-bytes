@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
@@ -12,6 +14,126 @@ from loguru import logger
 from src.config import settings
 from src.portfolio.reader import read_portfolio, save_portfolio_to_db
 from src.portfolio.models import PortfolioSnapshot
+
+
+def _load_purchase_history(portfolio_name: str) -> dict[str, list[dict]]:
+    """Load per-lot purchase history from the portfolio def, if configured.
+
+    Returns a dict keyed by ticker → list of lot dicts with keys:
+      shares (Decimal | None), cost_basis (Decimal), purchase_date (str ISO).
+    Empty dict if no purchase_history is configured.
+    """
+    import json
+    from src.portfolio.portfolio_config import load_portfolio_defs
+
+    try:
+        defs = load_portfolio_defs()
+    except Exception:
+        return {}
+
+    pdef = next((d for d in defs if d.name == portfolio_name), None)
+    if pdef is None or not pdef.purchase_history:
+        return {}
+
+    history_path = Path(pdef.purchase_history)
+    if not history_path.exists():
+        logger.warning(f"Purchase history file not found: {history_path}")
+        return {}
+
+    with history_path.open(encoding="utf-8") as f:
+        raw = json.load(f)
+
+    # Strip comment keys and empty lot lists
+    return {k: v for k, v in raw.items() if not k.startswith("_") and v}
+
+
+def _apply_purchase_history_to_holdings(
+    holdings: list, lot_overrides: dict[str, list[dict]]
+) -> None:
+    """Mutate holdings in-place: set purchase_date to the earliest lot date per ticker.
+
+    This gives the analyst agent accurate holding period context.
+    """
+    from datetime import date as _date
+
+    for holding in holdings:
+        lots = lot_overrides.get(holding.ticker)
+        if not lots:
+            continue
+        dates = []
+        for lot in lots:
+            ds = lot.get("purchase_date")
+            if ds:
+                try:
+                    dates.append(_date.fromisoformat(ds))
+                except ValueError:
+                    pass
+        if dates:
+            holding.purchase_date = min(dates)
+
+
+def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
+    """Look up portfolio by name in portfolios.json and return (csv_path, is_temp).
+
+    Tries fidelity_positions → transactions_path → csv_path in that order.
+    Falls back to settings.portfolio_csv_path if nothing is configured.
+    Caller must unlink the file when is_temp is True.
+    """
+    from src.portfolio.portfolio_config import load_portfolio_defs
+
+    try:
+        defs = load_portfolio_defs()
+    except Exception as e:
+        logger.warning(f"Could not load portfolio config: {e}")
+        return settings.portfolio_csv_path, False
+
+    pdef = next((d for d in defs if d.name == portfolio_name), None)
+    if pdef is None:
+        logger.warning(f"Portfolio '{portfolio_name}' not found in config, using default CSV")
+        return settings.portfolio_csv_path, False
+
+    if pdef.fidelity_positions:
+        from src.portfolio.fidelity_reader import read_fidelity_positions
+        from src.portfolio.transaction_reader import export_holdings_to_csv
+        holdings = read_fidelity_positions(
+            pdef.fidelity_positions, account_filter=pdef.fidelity_account_filter
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
+        ) as tmp:
+            tmp_path = tmp.name
+        export_holdings_to_csv(holdings, tmp_path)
+        return tmp_path, True
+
+    if pdef.transactions_path:
+        from src.portfolio.transaction_reader import read_transactions, export_holdings_to_csv
+        holdings = read_transactions(Path(pdef.transactions_path))
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
+        ) as tmp:
+            tmp_path = tmp.name
+        export_holdings_to_csv(holdings, tmp_path)
+        return tmp_path, True
+
+    if pdef.csv_path:
+        return pdef.csv_path, False
+
+    return settings.portfolio_csv_path, False
+
+
+def _resolve_recipients(portfolio_name: str, override: list[str] | None) -> list[str] | None:
+    """Return email recipients: explicit override takes priority, then portfolio def, then None."""
+    if override:
+        return override
+    from src.portfolio.portfolio_config import load_portfolio_defs
+    try:
+        defs = load_portfolio_defs()
+        pdef = next((d for d in defs if d.name == portfolio_name), None)
+        if pdef and pdef.email_recipients:
+            return pdef.email_recipients
+    except Exception:
+        pass
+    return None
 
 
 def _fetch_signals_for_ticker(ticker: str):
@@ -53,7 +175,6 @@ def run_pipeline(
     - Phase 4 (analysts): all tickers run concurrently via asyncio.gather, bounded by MAX_PARALLEL_ANALYSTS
     """
     today = report_date or date.today()
-    csv_path = portfolio_csv or settings.portfolio_csv_path
     out = output_dir or Path("newsletters")
     label = portfolio_label or portfolio_name.replace("_", " ").title()
     t0 = time.monotonic()
@@ -64,9 +185,28 @@ def run_pipeline(
 
     # ── Phase 1: Portfolio ─────────────────────────────────────────
     logger.info("[1/5] Loading portfolio...")
-    holdings = read_portfolio(csv_path)
-    save_portfolio_to_db(holdings, portfolio_name=portfolio_name)
-    snapshot = PortfolioSnapshot(holdings=holdings)
+    # Resolve holdings source: explicit path → portfolios.json lookup → env default
+    csv_path, _is_temp_csv = (
+        (portfolio_csv, False) if portfolio_csv
+        else _resolve_portfolio_csv(portfolio_name)
+    )
+    email_recipients = _resolve_recipients(portfolio_name, email_recipients)
+    lot_overrides = _load_purchase_history(portfolio_name)
+    if lot_overrides:
+        logger.info(f"      Purchase history loaded: {list(lot_overrides.keys())}")
+    try:
+        holdings = read_portfolio(csv_path)
+        save_portfolio_to_db(holdings, portfolio_name=portfolio_name)
+    finally:
+        if _is_temp_csv:
+            try:
+                os.unlink(csv_path)
+            except Exception:
+                pass
+    # Apply earliest lot dates to holdings for accurate analyst context
+    if lot_overrides:
+        _apply_purchase_history_to_holdings(holdings, lot_overrides)
+    snapshot = PortfolioSnapshot(holdings=holdings, lot_overrides=lot_overrides)
     logger.info(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
 
     # ── Phase 2: Scrape ────────────────────────────────────────────
@@ -135,7 +275,7 @@ def run_pipeline(
             logger.info(f"      {ticker}: {'signals fetched' if signals else 'signals unavailable'}")
 
     if market_prices:
-        snapshot = PortfolioSnapshot(holdings=holdings, prices=market_prices, as_of=today)
+        snapshot = PortfolioSnapshot(holdings=holdings, prices=market_prices, as_of=today, lot_overrides=lot_overrides)
 
     # ── Phase 4: Analyst agents (concurrent via asyncio) ──────────
     logger.info(

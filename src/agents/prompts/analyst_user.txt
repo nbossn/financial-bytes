@@ -22,11 +22,11 @@ Analyze the following information for {{ ticker }} and produce a structured inve
 Produce a JSON object with this exact structure:
 {
   "ticker": "{{ ticker }}",
-  "summary": "<200-word narrative covering: what happened, why it matters, near-term and long-term implications for this specific holding>",
+  "summary": "<3–4 sentences max: (1) the key development, (2) direct impact on this position, (3) the near-term and long-term signal. No filler. Lead with the fact.>",
   "sentiment": <float between -1.0 (very bearish) and 1.0 (very bullish)>,
   "sentiment_label": "<one of: Very Bullish, Bullish, Neutral, Bearish, Very Bearish>",
   "recommendation": "<one of: BUY, HOLD, SELL>",
-  "recommendation_context": "<2-3 sentences explaining: (1) what the recommendation means for this specific position, (2) short-term outlook (1-4 weeks), (3) long-term outlook (3-12 months)>",
+  "recommendation_context": "<2 sentences max: what to do with this position and the key reason why>",
   "confidence": <float between 0.0 and 1.0>,
   "key_catalysts": ["<catalyst 1>", "<catalyst 2>", ...],
   "key_risks": ["<risk 1>", "<risk 2>", ...],

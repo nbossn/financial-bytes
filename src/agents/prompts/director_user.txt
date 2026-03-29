@@ -40,9 +40,9 @@ Per-position summary:
 Produce a JSON object with this exact structure:
 {
   "market_theme": "<one punchy sentence: the dominant market narrative today>",
-  "five_min_summary": "<300-word executive brief: lead with the theme, contextualize global moves, synthesize what it means for THIS portfolio specifically, end with the clearest action item>",
-  "portfolio_summary": "<150-word overview of portfolio health: P&L context, which positions are working/not working, overall posture>",
-  "global_market_context": "<100-word summary of Asia/London/futures context and its relevance to holdings>",
+  "five_min_summary": "<150-word max. Para 1 (2–3 sentences): the dominant development and its direct effect on the portfolio. Para 2 (2–3 sentences): which positions are most exposed and how. Para 3 (1–2 sentences): the clearest action item. No filler.>",
+  "portfolio_summary": "<75-word max. Which positions are working, which are not, and the portfolio's overall risk posture — in plain numbers and facts.>",
+  "global_market_context": "<50-word max. The one or two macro moves that matter today and which holdings they hit directly.>",
   "top_opportunities": [
     {"ticker": "<ticker>", "signal": "<BUY/HOLD/SELL>", "rationale": "<one sentence>", "short_term": "<1-4 week outlook>", "long_term": "<3-12 month outlook>"}
   ],

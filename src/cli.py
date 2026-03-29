@@ -306,7 +306,7 @@ def portfolios_list() -> None:
     click.echo(f"{'NAME':<20} {'LABEL':<30} {'CSV/TRANSACTIONS'}")
     click.echo("-" * 72)
     for p in defs:
-        source = p.transactions_path or p.csv_path or "(none)"
+        source = p.fidelity_positions or p.transactions_path or p.csv_path or "(none)"
         click.echo(f"{p.name:<20} {p.label:<30} {source}")
     click.echo(f"\n{len(defs)} portfolio(s) configured.")
 

@@ -196,6 +196,15 @@
   .confidence-fill { height: 4px; border-radius: 99px; background: #2563eb; }
   .confidence-label { font-size: 11px; color: #94a3b8; margin-top: 4px; }
 
+  /* ── Collapsible Stock Cards ─────────────────────────── */
+  details.stock-card { display: block; }
+  details.stock-card > summary { list-style: none; cursor: pointer; }
+  details.stock-card > summary::-webkit-details-marker { display: none; }
+  details.stock-card > summary::marker { display: none; }
+  details.stock-card > summary:hover { background: #f1f5f9; }
+  .sc-toggle-arrow { font-size: 11px; color: #94a3b8; margin-left: 8px; display: inline-block; transition: transform .2s; }
+  details.stock-card[open] > summary .sc-toggle-arrow { transform: rotate(90deg); }
+
   /* ── Footer ───────────────────────────────────────────── */
   .footer {
     background: #f8fafc;
@@ -353,84 +362,7 @@
   </div>
   {% endif %}
 
-  <!-- ⑧ PER-STOCK ANALYSIS CARDS -->
-  {% if analyst_reports %}
-  <div class="section">
-    <div class="section-label">Analyst Ratings Desk</div>
-    {% for ar in analyst_reports %}
-    <div class="stock-card">
-      <div class="sc-header">
-        <span class="sc-ticker">{{ ar.ticker }}</span>
-        <div class="sc-badges">
-          <span class="signal-badge badge-{{ ar.recommendation | lower }}">{{ ar.recommendation }}</span>
-          {% if ar.sentiment_label %}
-          <span style="font-size:12px;color:#64748b;">{{ ar.sentiment_label }}</span>
-          {% endif %}
-        </div>
-      </div>
-      <div class="sc-body">
-        <div class="sc-summary">{{ ar.summary }}</div>
-        <div class="sc-meta">
-          {% if ar.price_target %}
-          <div class="sc-meta-item">
-            <div class="mk">Price Target</div>
-            <div class="mv">${{ "%.2f"|format(ar.price_target) }}</div>
-          </div>
-          {% endif %}
-          {% if ar.analyst_consensus %}
-          <div class="sc-meta-item">
-            <div class="mk">Analyst Consensus</div>
-            <div class="mv">{{ ar.analyst_consensus }}</div>
-          </div>
-          {% endif %}
-          {% if ar.technical_signal %}
-          <div class="sc-meta-item" style="grid-column:1/-1;">
-            <div class="mk">Technical Signal</div>
-            <div class="mv">{{ ar.technical_signal }}</div>
-          </div>
-          {% endif %}
-          {% if ar.recommendation_context %}
-          <div class="sc-meta-item" style="grid-column:1/-1;">
-            <div class="mk">Context</div>
-            <div class="mv">{{ ar.recommendation_context }}</div>
-          </div>
-          {% endif %}
-        </div>
-        {% if ar.key_catalysts or ar.key_risks %}
-        <div class="sc-lists">
-          {% if ar.key_catalysts %}
-          <div class="sc-list cats">
-            <h4>Catalysts</h4>
-            <ul>{% for c in ar.key_catalysts %}<li>{{ c }}</li>{% endfor %}</ul>
-          </div>
-          {% endif %}
-          {% if ar.key_risks %}
-          <div class="sc-list risks">
-            <h4>Risks</h4>
-            <ul>{% for r in ar.key_risks %}<li>{{ r }}</li>{% endfor %}</ul>
-          </div>
-          {% endif %}
-        </div>
-        {% endif %}
-        <div class="confidence-bar">
-          <div class="confidence-fill" style="width:{{ (ar.confidence * 100) | int }}%;"></div>
-        </div>
-        <div class="confidence-label">Confidence: {{ (ar.confidence * 100) | int }}% · {{ ar.article_count }} article{{ 's' if ar.article_count != 1 }}</div>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <!-- ⑨ PORTFOLIO SUMMARY -->
-  {% if report.portfolio_summary %}
-  <div class="section">
-    <div class="section-label">Portfolio Health</div>
-    <div class="brief-body">{{ report.portfolio_summary }}</div>
-  </div>
-  {% endif %}
-
-  <!-- ⑩ TAX EFFICIENCY -->
+  <!-- ⑧ TAX EFFICIENCY -->
   {% if tax_summary and tax_summary.has_data %}
   <div class="section">
     <div class="section-label">Tax Efficiency</div>
@@ -511,6 +443,84 @@
       long-term rates assume 15%–20% LTCG rate. "Unknown" holding periods show the full 15%–37% range.
       Consult a tax adviser before making tax-motivated trades.
     </div>
+  </div>
+  {% endif %}
+
+  <!-- ⑨ PER-STOCK ANALYSIS CARDS -->
+  {% if analyst_reports %}
+  <div class="section">
+    <div class="section-label">Analyst Ratings Desk</div>
+    {% for ar in analyst_reports %}
+    <details class="stock-card">
+      <summary class="sc-header">
+        <span class="sc-ticker">{{ ar.ticker }}</span>
+        <div class="sc-badges">
+          <span class="signal-badge badge-{{ ar.recommendation | lower }}">{{ ar.recommendation }}</span>
+          {% if ar.sentiment_label %}
+          <span style="font-size:12px;color:#64748b;">{{ ar.sentiment_label }}</span>
+          {% endif %}
+          <span class="sc-toggle-arrow">▶</span>
+        </div>
+      </summary>
+      <div class="sc-body">
+        <div class="sc-summary">{{ ar.summary }}</div>
+        <div class="sc-meta">
+          {% if ar.price_target %}
+          <div class="sc-meta-item">
+            <div class="mk">Price Target</div>
+            <div class="mv">${{ "%.2f"|format(ar.price_target) }}</div>
+          </div>
+          {% endif %}
+          {% if ar.analyst_consensus %}
+          <div class="sc-meta-item">
+            <div class="mk">Analyst Consensus</div>
+            <div class="mv">{{ ar.analyst_consensus }}</div>
+          </div>
+          {% endif %}
+          {% if ar.technical_signal %}
+          <div class="sc-meta-item" style="grid-column:1/-1;">
+            <div class="mk">Technical Signal</div>
+            <div class="mv">{{ ar.technical_signal }}</div>
+          </div>
+          {% endif %}
+          {% if ar.recommendation_context %}
+          <div class="sc-meta-item" style="grid-column:1/-1;">
+            <div class="mk">Context</div>
+            <div class="mv">{{ ar.recommendation_context }}</div>
+          </div>
+          {% endif %}
+        </div>
+        {% if ar.key_catalysts or ar.key_risks %}
+        <div class="sc-lists">
+          {% if ar.key_catalysts %}
+          <div class="sc-list cats">
+            <h4>Catalysts</h4>
+            <ul>{% for c in ar.key_catalysts %}<li>{{ c }}</li>{% endfor %}</ul>
+          </div>
+          {% endif %}
+          {% if ar.key_risks %}
+          <div class="sc-list risks">
+            <h4>Risks</h4>
+            <ul>{% for r in ar.key_risks %}<li>{{ r }}</li>{% endfor %}</ul>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+        <div class="confidence-bar">
+          <div class="confidence-fill" style="width:{{ (ar.confidence * 100) | int }}%;"></div>
+        </div>
+        <div class="confidence-label">Confidence: {{ (ar.confidence * 100) | int }}% · {{ ar.article_count }} article{{ 's' if ar.article_count != 1 }}</div>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- ⑩ PORTFOLIO SUMMARY -->
+  {% if report.portfolio_summary %}
+  <div class="section">
+    <div class="section-label">Portfolio Health</div>
+    <div class="brief-body">{{ report.portfolio_summary }}</div>
   </div>
   {% endif %}
 

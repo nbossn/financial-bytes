@@ -14,6 +14,7 @@ class PortfolioDef:
     transactions_path: str | None = None    # Robinhood transaction history CSV
     fidelity_positions: str | None = None   # Fidelity Portfolio_Positions_*.csv export
     fidelity_account_filter: str | None = None  # Optional: filter by account name substring
+    purchase_history: str | None = None     # JSON file with per-lot acquisition dates/costs
     email_recipients: list[str] = field(default_factory=list)
 
 
@@ -54,6 +55,7 @@ def load_portfolio_defs(config_path: str | Path | None = None) -> list[Portfolio
             transactions_path=item.get("transactions_path") or item.get("transactions"),
             fidelity_positions=item.get("fidelity_positions"),
             fidelity_account_filter=item.get("fidelity_account_filter"),
+            purchase_history=item.get("purchase_history"),
             email_recipients=item.get("email_recipients", []),
         ))
 

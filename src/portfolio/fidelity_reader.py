@@ -13,8 +13,12 @@ from src.portfolio.models import Holding
 
 
 # Symbols to always skip (money market funds, ETFs used as cash equivalents)
-_SKIP_SYMBOLS = {"SPAXX", "FDRXX", "FCNTX", "FZFXX", "FDLXX"}
+# Note: SPAXX is intentionally NOT in this set — it is included as a cash-equivalent holding
+_SKIP_SYMBOLS = {"FDRXX", "FCNTX", "FZFXX", "FDLXX"}
 _SKIP_PATTERN = re.compile(r"\*+$")  # e.g. "SPAXX**"
+
+# Money market funds priced at $1.00/share — derive quantity from Current Value when Quantity is blank
+_MONEY_MARKET_SYMBOLS = {"SPAXX", "FZDXX", "FZAXX"}
 
 
 def _clean_decimal(value: str) -> Decimal | None:
@@ -91,6 +95,19 @@ def read_fidelity_positions(
             quantity = _clean_decimal(row.get("Quantity") or "")
             avg_cost = _clean_decimal(row.get("Average Cost Basis") or "")
             cost_basis_total = _clean_decimal(row.get("Cost Basis Total") or "")
+
+            # Money market funds (e.g. SPAXX) are priced at $1.00/share;
+            # Fidelity omits Quantity and Cost Basis — derive from Current Value.
+            if (quantity is None or quantity <= 0) and ticker in _MONEY_MARKET_SYMBOLS:
+                current_value = _clean_decimal(row.get("Current Value") or "")
+                if current_value and current_value > 0:
+                    quantity = current_value
+                    avg_cost = Decimal("1.00")
+                    logger.debug(f"Money market {ticker}: derived {quantity} shares @ $1.00 from Current Value")
+                else:
+                    logger.warning(f"Skipping {ticker}: no value data for money market fund")
+                    skipped.append(ticker)
+                    continue
 
             if quantity is None or quantity <= 0:
                 logger.debug(f"Skipping {ticker}: invalid quantity '{row.get('Quantity')}'")
