@@ -25,6 +25,7 @@ def _setup_logging(level: str = "INFO") -> None:
 
 
 _TICKER_RE = __import__("re").compile(r"^[A-Z]{1,5}$")
+_PORTFOLIO_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _ALLOWED_OUTPUT_BASE = Path("newsletters").resolve()
 
@@ -44,6 +45,14 @@ def _validate_ticker(ticker: str) -> str:
     if not _TICKER_RE.match(t):
         raise click.UsageError(f"Invalid ticker symbol '{ticker}' — must be 1-5 letters (A-Z)")
     return t
+
+
+def _validate_portfolio_name(ctx, param, value: str) -> str:  # noqa: ARG001
+    if not _PORTFOLIO_NAME_RE.match(value):
+        raise click.BadParameter(
+            "Portfolio name must be 1–64 alphanumeric characters, hyphens, or underscores."
+        )
+    return value
 
 
 def _validate_output_dir(output_dir: str) -> Path:
@@ -74,7 +83,7 @@ def cli(log_level: str) -> None:
 @click.option("--skip-scrape", is_flag=True, help="Use cached articles from DB")
 @click.option("--skip-email", is_flag=True, help="Generate newsletter but don't send email")
 @click.option("--output-dir", default="newsletters", show_default=True, help="Output directory")
-@click.option("--portfolio-name", default="default", show_default=True,
+@click.option("--portfolio-name", default="default", show_default=True, callback=_validate_portfolio_name,
               help="Portfolio identifier (used in DB and output path)")
 @click.option("--portfolio-label", default=None,
               help="Display name for newsletter title (e.g. 'Roth IRA')")
@@ -280,7 +289,7 @@ def analyse(tickers: tuple[str, ...], date: date | None) -> None:
 @click.option("--date", "-d", default=None, callback=_parse_date, help="Report date (YYYY-MM-DD)")
 @click.option("--skip-email", is_flag=True, help="Generate only, don't send")
 @click.option("--output-dir", default="newsletters", show_default=True)
-@click.option("--portfolio-name", default="default", show_default=True,
+@click.option("--portfolio-name", default="default", show_default=True, callback=_validate_portfolio_name,
               help="Portfolio identifier to regenerate newsletter for")
 def newsletter(date: date | None, skip_email: bool, output_dir: str, portfolio_name: str) -> None:
     """Regenerate newsletter from existing DB data and optionally send."""
@@ -289,7 +298,7 @@ def newsletter(date: date | None, skip_email: bool, output_dir: str, portfolio_n
         report_date=date,
         skip_scrape=True,
         skip_email=skip_email,
-        output_dir=Path(output_dir),
+        output_dir=_validate_output_dir(output_dir),
         portfolio_name=portfolio_name,
     )
     for fmt, path in result["paths"].items():

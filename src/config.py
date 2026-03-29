@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     # GitHub
     github_token: str = Field("", alias="GITHUB_TOKEN")
-    github_repo: str = Field("nbossn/financial-bytes", alias="GITHUB_REPO")
+    github_repo: str = Field("your-username/financial-bytes", alias="GITHUB_REPO")
 
     # Scraper
     scraper_delay_min: float = Field(2.0, alias="SCRAPER_DELAY_MIN")

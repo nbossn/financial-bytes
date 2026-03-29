@@ -185,13 +185,13 @@ def _github_sync() -> bool:
         askpass_script = tempfile.NamedTemporaryFile(
             mode="w", suffix=".sh", delete=False, prefix="fb_askpass_"
         )
-        askpass_script.write(f"#!/bin/sh\necho '{settings.github_token}'\n")
+        askpass_script.write('#!/bin/sh\necho "$GIT_TOKEN"\n')
         askpass_script.flush()
         os.chmod(askpass_script.name, 0o700)
         askpass_path = askpass_script.name
         askpass_script.close()
         try:
-            push_env = {**os.environ, "GIT_ASKPASS": askpass_path, "GIT_TERMINAL_PROMPT": "0"}
+            push_env = {**os.environ, "GIT_ASKPASS": askpass_path, "GIT_TERMINAL_PROMPT": "0", "GIT_TOKEN": settings.github_token}
             subprocess.run(
                 ["git", "push", repo_url, "HEAD:main"],
                 cwd=project_root, check=True, capture_output=True, env=push_env,
