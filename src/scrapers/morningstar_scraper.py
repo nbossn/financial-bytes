@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from src.scrapers._utils import is_safe_url
 from src.scrapers.base_scraper import BaseScraper, ScrapedArticle
 
 MORNINGSTAR_NEWS_URL = "https://www.morningstar.com/stocks/{exchange}/{ticker}/news"
@@ -64,6 +65,9 @@ class MorningstarScraper(BaseScraper):
         return articles
 
     def _fetch_article(self, url: str, headers: dict) -> str | None:
+        if not is_safe_url(url):
+            logger.warning(f"[morningstar] Blocked unsafe URL: {url[:80]}")
+            return None
         try:
             resp = requests.get(url, headers=headers, timeout=15)
             resp.raise_for_status()

@@ -14,6 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
+from src.scrapers._utils import is_safe_url
 from src.scrapers.base_scraper import BaseScraper, ScrapedArticle
 from src.scrapers.user_agents import random_user_agent
 
@@ -43,6 +44,9 @@ def _build_driver() -> webdriver.Chrome:
 
 def _extract_article_text(url: str, headers: dict) -> str | None:
     """Fetch article URL and extract body text."""
+    if not is_safe_url(url):
+        logger.warning(f"[finviz] Blocked unsafe URL: {url[:80]}")
+        return None
     try:
         resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
         resp.raise_for_status()

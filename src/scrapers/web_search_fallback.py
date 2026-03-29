@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from src.scrapers._utils import is_safe_url
 from src.scrapers.base_scraper import BaseScraper, ScrapedArticle
 
 
@@ -85,29 +86,8 @@ class WebSearchFallback(BaseScraper):
         except Exception:
             return None
 
-    @staticmethod
-    def _is_safe_url(url: str) -> bool:
-        """Reject non-http(s) schemes and private/loopback IP ranges (SSRF guard)."""
-        import ipaddress
-        from urllib.parse import urlparse
-        try:
-            parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https"):
-                return False
-            host = parsed.hostname or ""
-            # Block bare IP addresses that are private/loopback/link-local
-            try:
-                addr = ipaddress.ip_address(host)
-                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                    return False
-            except ValueError:
-                pass  # hostname, not an IP — allow
-            return True
-        except Exception:
-            return False
-
     def _fetch_article(self, url: str, headers: dict) -> str | None:
-        if not self._is_safe_url(url):
+        if not is_safe_url(url):
             logger.warning(f"[web_search] Blocked unsafe URL: {url[:80]}")
             return None
         try:
