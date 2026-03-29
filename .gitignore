@@ -6,6 +6,8 @@
 # Sensitive data — never commit
 portfolio.csv
 portfolio.json
+portfolios.json
+data/*_purchase_history.json
 
 # Newsletter output (managed via fullstack agent commits)
 newsletters/**/*.html
@@ -61,5 +63,5 @@ test-results/
 chromedriver
 geckodriver
 
-# Multi-portfolio config (contains personal paths/email)
-portfolios.json
+# Multi-portfolio config (contains personal paths/emails)
+# Note: portfolios.json already listed above under Sensitive data
