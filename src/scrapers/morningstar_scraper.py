@@ -6,13 +6,25 @@ from loguru import logger
 from src.scrapers._utils import is_safe_url
 from src.scrapers.base_scraper import BaseScraper, ScrapedArticle
 
-MORNINGSTAR_NEWS_URL = "https://www.morningstar.com/stocks/{exchange}/{ticker}/news"
-MORNINGSTAR_SEARCH = "https://www.morningstar.com/search?query={ticker}&contentType=article"
+MORNINGSTAR_STOCK_URL = "https://www.morningstar.com/stocks/{exchange}/{ticker}/news"
+MORNINGSTAR_ETF_URL = "https://www.morningstar.com/etfs/{exchange}/{ticker}/news"
 
 EXCHANGE_MAP = {
+    # Stocks — XNAS (Nasdaq), XNYS (NYSE)
     "MSFT": "xnas", "NVDA": "xnas", "AAPL": "xnas", "GOOGL": "xnas",
-    "AMZN": "xnas", "META": "xnas", "TSLA": "xnas", "AMD": "xnas",
+    "GOOG": "xnas", "AMZN": "xnas", "META": "xnas", "TSLA": "xnas",
+    "AMD": "xnas", "COIN": "xnas", "AVGO": "xnas",
     "JPM": "xnys", "BAC": "xnys", "GS": "xnys", "WMT": "xnys",
+    "FIG": "xnas", "VST": "xnys",
+}
+
+# ETF tickers — use /etfs/ path
+ETF_TICKERS = {"QQQ", "VOO", "VOOG", "SPY", "IWM", "DIA", "GLD", "SLV", "TLT", "HYG"}
+ETF_EXCHANGE_MAP = {
+    "QQQ": "xnas",
+    "VOO": "arcx", "VOOG": "arcx", "SPY": "arcx",
+    "IWM": "arcx", "DIA": "arcx", "GLD": "arcx",
+    "SLV": "arcx", "TLT": "xnas", "HYG": "arcx",
 }
 
 
@@ -20,8 +32,13 @@ class MorningstarScraper(BaseScraper):
     source_name = "morningstar"
 
     def _scrape(self, ticker: str) -> list[ScrapedArticle]:
-        exchange = EXCHANGE_MAP.get(ticker, "xnas")
-        url = MORNINGSTAR_NEWS_URL.format(exchange=exchange, ticker=ticker.lower())
+        if ticker in ETF_TICKERS:
+            exchange = ETF_EXCHANGE_MAP.get(ticker, "arcx")
+            url = MORNINGSTAR_ETF_URL.format(exchange=exchange, ticker=ticker.lower())
+        else:
+            exchange = EXCHANGE_MAP.get(ticker, "xnas")
+            url = MORNINGSTAR_STOCK_URL.format(exchange=exchange, ticker=ticker.lower())
+
         articles = []
         headers = self._get_headers()
 
@@ -31,11 +48,14 @@ class MorningstarScraper(BaseScraper):
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "lxml")
 
-            article_links = soup.select("a[href*='/articles/'], a[href*='/news/'], .mdc-news__headline a")
-            seen_urls = set()
+            article_links = soup.select(
+                "a[href*='/articles/'], a[href*='/news/'], .mdc-news__headline a, "
+                ".mdc-article-list__headline a"
+            )
+            seen_urls: set[str] = set()
 
             for a_tag in article_links[:10]:
-                href = a_tag.get("href", "")
+                href = a_tag.get("href", "").strip()
                 if not href or href in seen_urls:
                     continue
                 if not href.startswith("http"):
@@ -62,6 +82,7 @@ class MorningstarScraper(BaseScraper):
         except Exception as e:
             logger.warning(f"[morningstar] {ticker}: {e}")
 
+        logger.info(f"[morningstar] {len(articles)} articles for {ticker}")
         return articles
 
     def _fetch_article(self, url: str, headers: dict) -> str | None:

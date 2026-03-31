@@ -56,12 +56,14 @@ def _validate_portfolio_name(ctx, param, value: str) -> str:  # noqa: ARG001
 
 
 def _validate_output_dir(output_dir: str) -> Path:
-    """Resolve and confine output_dir to the newsletters tree."""
+    """Resolve and confine output_dir to within the newsletters tree."""
     resolved = Path(output_dir).resolve()
-    # Allow any path under the project root or under newsletters/
-    # (operator may choose a custom absolute path; just block traversal tricks)
-    if ".." in Path(output_dir).parts:
-        raise click.UsageError(f"Invalid output directory '{output_dir}' — path traversal not allowed")
+    try:
+        resolved.relative_to(_ALLOWED_OUTPUT_BASE)
+    except ValueError:
+        raise click.UsageError(
+            f"Output directory must be inside {_ALLOWED_OUTPUT_BASE}. Got: {resolved}"
+        )
     return resolved
 
 
@@ -83,7 +85,7 @@ def cli(log_level: str) -> None:
 @click.option("--skip-scrape", is_flag=True, help="Use cached articles from DB")
 @click.option("--skip-email", is_flag=True, help="Generate newsletter but don't send email")
 @click.option("--output-dir", default="newsletters", show_default=True, help="Output directory")
-@click.option("--portfolio-name", default="default", show_default=True, callback=_validate_portfolio_name,
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
               help="Portfolio identifier (used in DB and output path)")
 @click.option("--portfolio-label", default=None,
               help="Display name for newsletter title (e.g. 'Roth IRA')")
@@ -289,7 +291,7 @@ def analyse(tickers: tuple[str, ...], date: date | None) -> None:
 @click.option("--date", "-d", default=None, callback=_parse_date, help="Report date (YYYY-MM-DD)")
 @click.option("--skip-email", is_flag=True, help="Generate only, don't send")
 @click.option("--output-dir", default="newsletters", show_default=True)
-@click.option("--portfolio-name", default="default", show_default=True, callback=_validate_portfolio_name,
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
               help="Portfolio identifier to regenerate newsletter for")
 def newsletter(date: date | None, skip_email: bool, output_dir: str, portfolio_name: str) -> None:
     """Regenerate newsletter from existing DB data and optionally send."""

@@ -127,8 +127,12 @@ class MassiveEndpoints:
 
     @_retry_decorator()
     def get_technicals(self, ticker: str) -> TechnicalIndicators | None:
-        """Fetch RSI, MACD, EMA technical indicators for a ticker."""
+        """Fetch RSI, MACD, EMA technical indicators for a ticker.
+
+        Falls back to Finviz snapshot scraping when massive.com is rate-limited.
+        """
         indicators = TechnicalIndicators(ticker=ticker)
+        massive_ok = False
         try:
             rsi_data = self.client.get(
                 f"/v1/indicators/rsi/{ticker}",
@@ -137,6 +141,7 @@ class MassiveEndpoints:
             rsi_results = rsi_data.get("results", {}).get("values", [])
             if rsi_results:
                 indicators.rsi = rsi_results[0].get("value")
+                massive_ok = True
 
             macd_data = self.client.get(
                 f"/v1/indicators/macd/{ticker}",
@@ -147,21 +152,45 @@ class MassiveEndpoints:
             if macd_results:
                 indicators.macd = macd_results[0].get("value")
                 indicators.macd_signal = macd_results[0].get("signal")
-
-            # Derive signal summary
-            if indicators.rsi is not None:
-                if indicators.rsi > 70:
-                    indicators.signal_summary = "Overbought (RSI > 70)"
-                elif indicators.rsi < 30:
-                    indicators.signal_summary = "Oversold (RSI < 30)"
-                else:
-                    indicators.signal_summary = f"Neutral (RSI {indicators.rsi:.1f})"
+                massive_ok = True
 
             logger.info(f"massive.com: technicals fetched for {ticker} — RSI={indicators.rsi}")
-            return indicators
-        except MassiveAPIError:
-            logger.warning(f"Could not fetch technicals for {ticker}")
-            return None
+        except MassiveAPIError as e:
+            logger.warning(f"massive.com technicals unavailable for {ticker}: {e}")
+
+        # Finviz fallback: always fetch SMA20/50/200, Beta, and chart URLs;
+        # also provides RSI/MACD if massive.com was rate-limited
+        try:
+            from src.scrapers.finviz_scraper import FinvizScraper
+            fv = FinvizScraper()
+            fv_data = fv.scrape_technicals(ticker)
+            if fv_data:
+                if not massive_ok:
+                    indicators.rsi = fv_data.get("rsi", indicators.rsi)
+                    indicators.macd = fv_data.get("macd", indicators.macd)
+                indicators.sma_20 = fv_data.get("sma_20")
+                indicators.sma_50 = fv_data.get("sma_50")
+                indicators.sma_200 = fv_data.get("sma_200")
+                indicators.beta = fv_data.get("beta")
+                indicators.chart_daily_url = fv_data.get("chart_daily_url")
+                indicators.chart_weekly_url = fv_data.get("chart_weekly_url")
+        except Exception as e:
+            logger.debug(f"[finviz] technicals fallback failed for {ticker}: {e}")
+
+        # Derive signal summary
+        if indicators.rsi is not None:
+            if indicators.rsi > 70:
+                indicators.signal_summary = "Overbought (RSI > 70)"
+            elif indicators.rsi < 30:
+                indicators.signal_summary = "Oversold (RSI < 30)"
+            else:
+                indicators.signal_summary = f"Neutral (RSI {indicators.rsi:.1f})"
+
+        has_data = any([
+            indicators.rsi, indicators.macd, indicators.sma_20,
+            indicators.sma_200, indicators.beta,
+        ])
+        return indicators if has_data else None
 
     def get_ticker_signals(self, ticker: str, lookback_hours: int | None = None) -> TickerSignals:
         """Fetch all signals for a ticker — 4 endpoints run in parallel."""

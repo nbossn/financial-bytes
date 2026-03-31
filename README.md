@@ -1,8 +1,8 @@
 # Financial Bytes
 
-Automated daily stock portfolio newsletter powered by AI agents. Scrapes financial news from seven sources, analyzes articles per holding using Claude AI, and delivers a 5-minute executive brief to your inbox before market open.
+Automated daily stock portfolio newsletter powered by AI agents. Scrapes financial news from six sources (including Google News RSS), pulls Finviz fundamentals and SEC filings, analyzes articles per holding using Claude AI, and delivers a 5-minute executive brief to your inbox before market open.
 
-Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching, and AI analysis pipeline. Natively imports Fidelity positions exports, supports multiple named portfolios, and tracks per-lot capital gains tax exposure.
+Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching, and AI analysis pipeline. Natively imports Fidelity positions exports, supports multiple named portfolios, tracks per-lot capital gains tax exposure, and incorporates fundamental data (P/E, margins, short interest, ROE) and recent SEC filings into every analyst recommendation.
 
 ---
 
@@ -30,7 +30,7 @@ Supports portfolios of **15+ tickers** via a parallel scraping, signal-fetching,
 Each morning before NYSE open, Financial Bytes runs an automated pipeline:
 
 1. **Loads your portfolio** from one of four sources: a hand-maintained `portfolio.csv`, a Robinhood transaction export, a Fidelity positions export, or a named portfolio definition in `portfolios.json`
-2. **Scrapes financial news** from Finviz, Yahoo Finance, CNBC, MarketWatch, Morningstar, Reuters, and Seeking Alpha for every holding — **tickers scraped in parallel**
+2. **Scrapes financial news** from Finviz, Google News RSS, Yahoo Finance, CNBC, MarketWatch, and Morningstar for every holding — **tickers scraped in parallel**. Also scrapes Finviz for full fundamental data (valuation ratios, margins, ownership, short interest) and recent SEC filings, which are passed directly to the Analyst agent
 3. **Fetches structured signals** from massive.com — analyst ratings, price targets, technical indicators, and Benzinga news sentiment — **all 4 endpoint calls per ticker run concurrently, and all tickers run in parallel**
 4. **Runs an Analyst AI agent** (Claude Haiku) per ticker — reads articles and produces a BUY/HOLD/SELL recommendation, confidence score, sentiment label, key catalysts, and risk factors — **all tickers analyzed concurrently** (bounded semaphore to respect rate limits)
 5. **Runs a Director AI agent** (Claude Sonnet) that synthesizes all per-stock reports into a portfolio-level brief with a market theme, 5-minute summary, top opportunities, and prioritized action items
@@ -46,13 +46,12 @@ Each morning before NYSE open, Financial Bytes runs an automated pipeline:
 
 | Source | What Is Collected | Method |
 |--------|------------------|--------|
-| **Finviz** | News headline links for each ticker | Selenium (headless Chrome) |
-| **Yahoo Finance** | Full article text, video transcript snippets | Playwright (headless Chrome) |
-| **CNBC** | Full article text | Playwright (headless Chrome) |
-| **MarketWatch** | Pre-paywall snippets and headlines | Playwright (headless Chrome) |
+| **Finviz** | News headline links, full snapshot fundamentals (P/E, EPS, margins, ROE, short float, etc.), and recent SEC filings | Selenium (headless Chrome) + requests + BeautifulSoup |
+| **Google News RSS** | News headlines from hundreds of sources — no auth required | requests + defusedxml |
+| **Yahoo Finance** | Full article text | requests + BeautifulSoup |
+| **CNBC** | Full article text via Queryly search API | requests + BeautifulSoup |
+| **MarketWatch** | Pre-paywall snippets and headlines | requests + BeautifulSoup |
 | **Morningstar** | Analysis page text | requests + BeautifulSoup |
-| **Reuters** | Full article text | requests + BeautifulSoup |
-| **Seeking Alpha** | Free-tier snippets and headlines | requests |
 | **massive.com API** | Analyst ratings, price targets, technical indicators, Benzinga news, real-time quotes | REST API (requires API key) |
 | **DuckDuckGo** (fallback) | Web search results when <3 articles found | requests (DDGS library) |
 
@@ -97,7 +96,7 @@ The Director agent sends to Anthropic's API:
 - Python 3.11+
 - [Poetry](https://python-poetry.org/docs/#installation)
 - PostgreSQL 14+ (or use SQLite for testing: `DATABASE_URL=sqlite:///financial_bytes.db`)
-- Google Chrome (for Playwright/Selenium scrapers)
+- Google Chrome (for Selenium — used by Finviz scraper only; all other scrapers are requests-based)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — authenticated with a Claude Code subscription (used for AI agent calls without consuming API credits)
 
 ### 1. Clone
@@ -113,7 +112,7 @@ cd financial-bytes
 make install
 ```
 
-This installs all Python dependencies via Poetry and downloads the Chromium browser for Playwright.
+This installs all Python dependencies via Poetry. Selenium uses your system Chrome install; no separate Playwright browser download is required.
 
 ### 3. Configure Environment
 
@@ -258,6 +257,12 @@ MAX_PARALLEL_ANALYSTS=5    # Concurrent claude -p (Haiku) calls for analysis
 # Search fallback (optional, falls back to DuckDuckGo if not set)
 # SERPAPI_KEY=your_serpapi_key_here
 
+# CNBC / Queryly search API (public key provided; override if requests get blocked)
+QUERYLY_API_KEY=31a35d40a9a64ab3
+
+# Claude agent permissions (false = require manual approval in claude CLI; true = auto-approve)
+CLAUDE_SKIP_PERMISSIONS=true
+
 # Logging
 LOG_LEVEL=INFO
 LOG_FILE=logs/financial_bytes.log
@@ -395,7 +400,7 @@ Financial Bytes uses four layers of parallelism to handle 15+ ticker portfolios 
 **File:** `src/scrapers/scraper_orchestrator.py` — `scrape_tickers_parallel()`
 **Called from:** `src/pipeline/main_pipeline.py` — Phase 2
 
-Each ticker is scraped by a pool of up to `MAX_PARALLEL_TICKERS` worker threads. Within each ticker, Finviz (Selenium) runs first, then the remaining 6 scrapers run in their own inner pool of 3.
+Each ticker is scraped by a pool of up to `MAX_PARALLEL_TICKERS` worker threads. Within each ticker, Finviz (Selenium) runs first to collect news links, full fundamentals, and SEC filings; then the remaining scrapers (Google News, Yahoo, CNBC, MarketWatch, Morningstar — all requests-based) run in their own inner pool of 3.
 
 ```
 MAX_PARALLEL_TICKERS=3   # hard ceiling; each worker spawns a Chrome instance
@@ -451,7 +456,7 @@ Rate-limit errors (`429`, `529`, `overloaded`) are detected in stderr and trigge
 
 | Phase | Sequential | Parallel (defaults) |
 |-------|-----------|---------------------|
-| Phase 2 — Scrape | ~45 min | ~15 min (3 workers) |
+| Phase 2 — Scrape | ~45 min | ~8 min (3 workers; most scrapers now requests-based) |
 | Phase 3 — Signals | ~90 s | ~10 s (10 outer × 4 inner) |
 | Phase 4 — Analysts | ~150 s | ~35 s (5 concurrent Haiku) |
 | Phase 5 — Director | ~20 s | ~20 s (single Sonnet call) |
@@ -731,7 +736,7 @@ With default parallelism settings on a 15-ticker portfolio:
 | Time | Stage | Parallelism |
 |------|-------|-------------|
 | 5:00 AM | Portfolio loaded; DB checked | — |
-| 5:00–5:15 AM | Web scraping across all tickers | 3 parallel Chrome instances |
+| 5:00–5:08 AM | Web scraping across all tickers (Finviz + fundamentals + SEC filings; Google News, Yahoo, CNBC, MarketWatch, Morningstar via requests) | 3 parallel workers |
 | 5:15–5:16 AM | massive.com market signals | Up to 10 tickers × 4 HTTP calls concurrently |
 | 5:16–5:22 AM | Analyst Agent per ticker (Claude Haiku) | 5 concurrent `claude -p` subprocesses |
 | 5:22–5:27 AM | Director Agent synthesis (Claude Sonnet) | Single call |
@@ -754,7 +759,8 @@ portfolio.csv  ─or─  robinhood_transactions.csv  ─or─  fidelity_position
      │
      ├─▶ Phase 2: Scraping (parallel across tickers) ─────────────────┐
      │   ThreadPoolExecutor(MAX_PARALLEL_TICKERS=3)                   │
-     │   Each ticker: Finviz → [Yahoo/CNBC/MarketWatch/...] in pool   │
+     │   Each ticker: Finviz (news + fundamentals + SEC filings)      │
+     │            → [Google News/Yahoo/CNBC/MarketWatch/...] in pool  │
      │   Fallback: DuckDuckGo if <3 articles found                    │
      │                                                                │
      ├─▶ Phase 3: Market Signals (parallel across + within tickers) ──┤
@@ -812,7 +818,7 @@ portfolio.csv  ─or─  robinhood_transactions.csv  ─or─  fidelity_position
 
 | Agent | Model | Runs | Purpose |
 |-------|-------|------|---------|
-| **Analyst** | `claude-haiku-4-5-20251001` | Daily, per ticker (parallel) | Article summarization, sentiment scoring, BUY/HOLD/SELL recommendation |
+| **Analyst** | `claude-haiku-4-5-20251001` | Daily, per ticker (parallel) | Article summarization, sentiment scoring, BUY/HOLD/SELL recommendation. Prompt includes scraped articles, technical signals, analyst ratings, **Finviz fundamentals** (P/E, EPS, margins, ROE, short float, etc.), and **recent SEC filings** |
 | **Director** | `claude-sonnet-4-6` | Daily, once | Portfolio synthesis, market theme, action items |
 | **Fullstack** | — (no AI) | Weekly (via `make audit`) | DB health, cost audit, security scan, GitHub sync |
 
@@ -824,15 +830,16 @@ All AI calls are made via `claude -p` subprocesses, routing through your Claude 
 
 | Source | Method | Data Type |
 |--------|--------|-----------|
-| Finviz | Selenium | News links per ticker |
-| Yahoo Finance | Playwright | Full articles |
-| CNBC | Playwright | Full articles |
-| MarketWatch | Playwright | Pre-paywall snippets |
+| Finviz | Selenium + requests + BeautifulSoup | News links, full fundamentals snapshot, SEC filings |
+| Google News RSS | requests + defusedxml | Headlines from hundreds of outlets — no auth |
+| Yahoo Finance | requests + BeautifulSoup | Full articles |
+| CNBC | requests + BeautifulSoup (Queryly API) | Full articles |
+| MarketWatch | requests + BeautifulSoup | Pre-paywall snippets |
 | Morningstar | requests + BeautifulSoup | Analysis text |
-| Reuters | requests + BeautifulSoup | Full articles |
-| Seeking Alpha | requests | Free-tier snippets |
 | massive.com | REST API | Structured signals, Benzinga news |
 | DuckDuckGo | requests (DDGS) | Fallback when <3 articles found |
+
+> **Note:** Reuters and Seeking Alpha scrapers were retired. Yahoo Finance, CNBC, and MarketWatch were migrated from Playwright (headless Chrome) to requests-based scrapers, eliminating the browser dependency for the article-fetching phase.
 
 ---
 
@@ -842,9 +849,9 @@ All AI calls use `claude -p` via the Claude Code CLI, which routes through your 
 
 | Component | Model | Tokens per call (est.) |
 |-----------|-------|------------------------|
-| Analyst Agent (per ticker) | Haiku 4.5 | ~3,000 in + ~600 out |
+| Analyst Agent (per ticker) | Haiku 4.5 | ~4,000 in + ~600 out (includes fundamentals + SEC filings) |
 | Director Agent (once) | Sonnet 4.6 | ~8,000 in + ~800 out |
-| **15-ticker pipeline total** | | ~55,000 in + ~9,800 out |
+| **15-ticker pipeline total** | | ~68,000 in + ~9,800 out |
 
 ### massive.com API
 
@@ -865,8 +872,12 @@ Costs vary by massive.com plan. Run `make audit` to see actual estimated costs b
 - All secrets in `.env` (gitignored, `chmod 600`)
 - `portfolio.csv` gitignored — never leaves your machine
 - Ticker symbols validated against `^[A-Z]{1,5}$` before use in URLs
-- Output directory validated against path traversal (`..` rejected)
-- SSRF protection on web search fallback — private/loopback IPs blocked
+- Output directory enforced within `newsletters/` via `Path.relative_to()` — absolute paths (e.g., `/etc/`) rejected at the boundary
+- **SSRF protection with DNS resolution** — `is_safe_url()` resolves hostnames via `socket.getaddrinfo()` before making any outbound request, blocking internal hostnames (e.g., `metadata.google.internal`) that resolve to private IPs; fails closed on DNS errors
+- **WeasyPrint SSRF mitigation** — custom `url_fetcher` runs `is_safe_url()` before every asset fetch during PDF rendering; WeasyPrint upgraded to ≥68 (addresses CVE-2025-68616)
+- **XML bomb protection** — Google News RSS parsed with `defusedxml` to prevent billion-laughs DoS on malicious feeds
+- **`--dangerously-skip-permissions` gated** — claude CLI subprocesses only pass the flag when `CLAUDE_SKIP_PERMISSIONS=true` (default); set to `false` for supervised/audit runs
+- **CNBC Queryly API key configurable** — moved from hardcoded value to `QUERYLY_API_KEY` env var
 - Jinja2 `SandboxedEnvironment` — prevents template injection via AI-generated content
 - GitHub token passed via `GIT_ASKPASS` — never embedded in command args or URLs
 - SMTP auth errors logged without credential fragments

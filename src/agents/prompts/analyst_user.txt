@@ -14,6 +14,12 @@ Analyze the following information for {{ ticker }} and produce a structured inve
 ## Analyst Ratings (from massive.com)
 {{ analyst_ratings }}
 
+## Fundamental Data (Finviz)
+{{ fundamentals_text }}
+
+## Recent SEC Filings
+{{ sec_filings_text }}
+
 ## News Articles ({{ article_count }} articles, most recent first)
 {{ articles_text }}
 

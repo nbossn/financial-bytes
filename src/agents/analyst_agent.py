@@ -38,6 +38,8 @@ class AnalystReport(BaseModel):
     analyst_consensus: str | None = None
     price_target: float | None = None
     technical_signal: str | None = None
+    chart_daily_url: str | None = None
+    chart_weekly_url: str | None = None
 
 
 def _format_articles(articles: list[ScrapedArticle]) -> str:
@@ -73,6 +75,62 @@ def _format_ratings(signals: TickerSignals | None) -> str:
     return "\n".join(lines)
 
 
+def _format_fundamentals(signals: TickerSignals | None) -> str:
+    """Format Finviz fundamentals for the analyst prompt."""
+    if not signals or not signals.fundamentals:
+        return "No fundamental data available."
+    f = signals.fundamentals
+    lines = []
+    if f.market_cap_text:
+        lines.append(f"Market Cap: {f.market_cap_text}")
+    if f.pe_ratio is not None:
+        lines.append(f"P/E: {f.pe_ratio:.1f}")
+    if f.forward_pe is not None:
+        lines.append(f"Forward P/E: {f.forward_pe:.1f}")
+    if f.peg_ratio is not None:
+        lines.append(f"PEG: {f.peg_ratio:.2f}")
+    if f.eps_ttm is not None:
+        lines.append(f"EPS (ttm): ${f.eps_ttm:.2f}")
+    if f.eps_next_year is not None:
+        lines.append(f"EPS Growth next Y: {f.eps_next_year:+.1f}%")
+    if f.profit_margin is not None:
+        lines.append(f"Profit Margin: {f.profit_margin:.1f}%")
+    if f.oper_margin is not None:
+        lines.append(f"Oper. Margin: {f.oper_margin:.1f}%")
+    if f.roe is not None:
+        lines.append(f"ROE: {f.roe:.1f}%")
+    if f.debt_eq is not None:
+        lines.append(f"Debt/Equity: {f.debt_eq:.2f}")
+    if f.short_float is not None:
+        lines.append(f"Short Float: {f.short_float:.1f}%")
+    if f.short_ratio is not None:
+        lines.append(f"Short Ratio: {f.short_ratio:.1f}")
+    if f.insider_own is not None:
+        lines.append(f"Insider Own: {f.insider_own:.1f}%")
+    if f.inst_own is not None:
+        lines.append(f"Inst. Own: {f.inst_own:.1f}%")
+    if f.target_price is not None:
+        lines.append(f"Analyst Target Price: ${f.target_price:.2f}")
+    if f.perf_ytd is not None:
+        lines.append(f"YTD Perf: {f.perf_ytd:+.1f}%")
+    if f.perf_year is not None:
+        lines.append(f"1Y Perf: {f.perf_year:+.1f}%")
+    return " | ".join(lines) if lines else "No fundamental data available."
+
+
+def _format_sec_filings(signals: TickerSignals | None) -> str:
+    """Format recent SEC filings for the analyst prompt."""
+    if not signals or not signals.sec_filings:
+        return "No recent SEC filings available."
+    lines = []
+    for filing in signals.sec_filings[:8]:
+        date = filing.get("date", "")
+        form = filing.get("form_type", "")
+        desc = filing.get("description", "")
+        lines.append(f"  {date} [{form}] {desc}")
+    return "\n".join(lines) if lines else "No recent SEC filings available."
+
+
 def _build_user_prompt(
     holding: Holding,
     articles: list[ScrapedArticle],
@@ -95,6 +153,8 @@ def _build_user_prompt(
         "{{ pnl_dollars }}": f"{pnl_dollars:+.2f}",
         "{{ technical_signals }}": _format_technicals(signals),
         "{{ analyst_ratings }}": _format_ratings(signals),
+        "{{ fundamentals_text }}": _format_fundamentals(signals),
+        "{{ sec_filings_text }}": _format_sec_filings(signals),
         "{{ article_count }}": str(len(articles)),
         "{{ articles_text }}": _format_articles(articles),
     }
@@ -117,15 +177,10 @@ def _is_rate_limit_error(stderr: str) -> bool:
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    result = subprocess.run(
-        [
-            "claude", "-p", user_prompt,
-            "--model", MODEL,
-            "--system-prompt", SYSTEM_PROMPT,
-            "--dangerously-skip-permissions",
-        ],
-        capture_output=True, text=True, timeout=180,
-    )
+    cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    if settings.claude_skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         err = result.stderr[:500]
         if _is_rate_limit_error(err):
@@ -178,6 +233,9 @@ def analyze_ticker(
         article_count=len(articles),
         **{k: v for k, v in data.items() if k != "ticker"},
     )
+    if signals and signals.technicals:
+        report.chart_daily_url = signals.technicals.chart_daily_url
+        report.chart_weekly_url = signals.technicals.chart_weekly_url
 
     _save_report(report, portfolio_name=portfolio_name)
     logger.info(f"Analyst report: {holding.ticker} → {report.recommendation} (confidence: {report.confidence:.0%})")
@@ -188,11 +246,11 @@ async def _call_claude_async(user_prompt: str) -> str:
     """Async subprocess wrapper for claude -p with retry."""
     for attempt in range(5):
         try:
+            cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+            if settings.claude_skip_permissions:
+                cmd.append("--dangerously-skip-permissions")
             proc = await asyncio.create_subprocess_exec(
-                "claude", "-p", user_prompt,
-                "--model", MODEL,
-                "--system-prompt", SYSTEM_PROMPT,
-                "--dangerously-skip-permissions",
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -258,6 +316,10 @@ async def analyze_ticker_async(
         article_count=len(articles),
         **{k: v for k, v in data.items() if k != "ticker"},
     )
+    # Attach chart URLs from Finviz technicals if available
+    if signals and signals.technicals:
+        report.chart_daily_url = signals.technicals.chart_daily_url
+        report.chart_weekly_url = signals.technicals.chart_weekly_url
     _save_report(report, portfolio_name=portfolio_name)
     logger.info(f"Analyst report: {holding.ticker} → {report.recommendation} ({report.confidence:.0%})")
     return report

@@ -506,6 +506,22 @@
           {% endif %}
         </div>
         {% endif %}
+        {% if ar.chart_daily_url or ar.chart_weekly_url %}
+        <div style="margin-top:14px;display:grid;grid-template-columns:{% if ar.chart_daily_url and ar.chart_weekly_url %}1fr 1fr{% else %}1fr{% endif %};gap:10px;">
+          {% if ar.chart_daily_url %}
+          <div>
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:4px;">Daily Chart</div>
+            <img src="{{ ar.chart_daily_url }}" alt="{{ ar.ticker }} daily chart" style="width:100%;border-radius:6px;border:1px solid #e2e8f0;">
+          </div>
+          {% endif %}
+          {% if ar.chart_weekly_url %}
+          <div>
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:4px;">Weekly Chart</div>
+            <img src="{{ ar.chart_weekly_url }}" alt="{{ ar.ticker }} weekly chart" style="width:100%;border-radius:6px;border:1px solid #e2e8f0;">
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
         <div class="confidence-bar">
           <div class="confidence-fill" style="width:{{ (ar.confidence * 100) | int }}%;"></div>
         </div>

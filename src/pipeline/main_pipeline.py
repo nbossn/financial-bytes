@@ -137,7 +137,7 @@ def _resolve_recipients(portfolio_name: str, override: list[str] | None) -> list
 
 
 def _fetch_signals_for_ticker(ticker: str):
-    """Fetch massive.com signals in a worker thread (each thread owns its client)."""
+    """Fetch massive.com signals + Finviz fundamentals in a worker thread."""
     try:
         from decimal import Decimal
         from src.api.massive_client import MassiveClient
@@ -151,7 +151,27 @@ def _fetch_signals_for_ticker(ticker: str):
                 if signals and signals.quote and signals.quote.current_price
                 else None
             )
-            return ticker, signals, price
+
+        # Augment with Finviz fundamentals and SEC filings
+        try:
+            from src.scrapers.finviz_scraper import FinvizScraper
+            from src.api.models import FinvizFundamentals
+
+            fv = FinvizScraper()
+            fund_data = fv.scrape_fundamentals(ticker)
+            if fund_data and signals:
+                # Only keep fields that belong to FinvizFundamentals
+                valid_fields = FinvizFundamentals.model_fields.keys()
+                filtered = {k: v for k, v in fund_data.items() if k in valid_fields}
+                signals.fundamentals = FinvizFundamentals(**filtered)
+
+            sec_filings = fv.scrape_sec_filings(ticker)
+            if sec_filings and signals:
+                signals.sec_filings = sec_filings
+        except Exception as fv_err:
+            logger.debug(f"Finviz fundamentals fetch failed for {ticker}: {fv_err}")
+
+        return ticker, signals, price
     except Exception as e:
         logger.warning(f"Signals fetch failed for {ticker}: {e}")
         return ticker, None, None
@@ -163,7 +183,7 @@ def run_pipeline(
     skip_scrape: bool = False,
     skip_email: bool = False,
     output_dir: Path | None = None,
-    portfolio_name: str = "default",
+    portfolio_name: str = "nbossn",
     portfolio_label: str | None = None,
     email_recipients: list[str] | None = None,
 ) -> dict:
@@ -303,7 +323,26 @@ def run_pipeline(
     logger.info("[5/5] Director synthesis...")
     from src.agents.director_agent import synthesize_portfolio
 
-    director_report = synthesize_portfolio(snapshot, analyst_reports, report_date=today, portfolio_name=portfolio_name)
+    # Find most recent prior newsletter for continuity context
+    # generator saves to {out}/{portfolio_name}/ — look there first, then root out/
+    prior_nl_path: Path | None = None
+    try:
+        for nl_dir in [out / portfolio_name, out]:
+            prior_htmls = sorted(nl_dir.glob("*.html"), reverse=True)
+            if prior_htmls:
+                prior_nl_path = prior_htmls[0]
+                break
+        if prior_nl_path:
+            logger.info(f"      Prior newsletter: {prior_nl_path.name}")
+    except Exception:
+        pass
+
+    director_report = synthesize_portfolio(
+        snapshot, analyst_reports,
+        report_date=today,
+        portfolio_name=portfolio_name,
+        prior_newsletter_path=prior_nl_path,
+    )
     logger.info(f"      Theme: {director_report.market_theme[:80]}")
     logger.info(f"      Sentiment: {director_report.overall_sentiment:+.2f}")
 

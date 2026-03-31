@@ -70,10 +70,37 @@ def _get_global_market_context() -> str:
     return "Global market context unavailable — refer to your brokerage for pre-market data."
 
 
+def _extract_prior_newsletter_summary(html_path: Path) -> str | None:
+    """Extract a short plain-text summary from a previous newsletter HTML file."""
+    if not html_path.exists():
+        return None
+    try:
+        from bs4 import BeautifulSoup
+        html = html_path.read_text(encoding="utf-8")
+        soup = BeautifulSoup(html, "lxml")
+        # Pull the five-min summary and action items sections if present
+        chunks = []
+        for tag in soup.select(".five-min-summary, .action-items, .section"):
+            text = tag.get_text(separator=" ", strip=True)
+            if len(text) > 40:
+                chunks.append(text[:400])
+            if len(chunks) >= 4:
+                break
+        if not chunks:
+            # Fallback: first 600 chars of body text
+            body_text = soup.get_text(separator=" ", strip=True)
+            return body_text[:600] if len(body_text) > 100 else None
+        return "\n\n".join(chunks)
+    except Exception as e:
+        logger.debug(f"Could not parse prior newsletter: {e}")
+        return None
+
+
 def _build_user_prompt(
     snapshot: PortfolioSnapshot,
     analyst_reports: list[AnalystReport],
     global_context: str,
+    prior_newsletter_summary: str | None = None,
 ) -> str:
     template = Template(USER_PROMPT_TEMPLATE)
 
@@ -90,6 +117,7 @@ def _build_user_prompt(
         global_market_context=global_context,
         analyst_reports=analyst_reports,
         tax_summary=tax,
+        prior_newsletter_summary=prior_newsletter_summary,
     )
 
 
@@ -107,15 +135,10 @@ def _is_rate_limit_error(stderr: str) -> bool:
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    result = subprocess.run(
-        [
-            "claude", "-p", user_prompt,
-            "--model", MODEL,
-            "--system-prompt", SYSTEM_PROMPT,
-            "--dangerously-skip-permissions",
-        ],
-        capture_output=True, text=True, timeout=300,
-    )
+    cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    if settings.claude_skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         err = result.stderr[:500]
         if _is_rate_limit_error(err):
@@ -129,11 +152,19 @@ def synthesize_portfolio(
     analyst_reports: list[AnalystReport],
     report_date: date | None = None,
     portfolio_name: str = "default",
+    prior_newsletter_path: Path | None = None,
 ) -> DirectorReport:
     """Run the director agent to synthesize all analyst reports into a portfolio brief."""
     today = report_date or date.today()
     global_context = _get_global_market_context()
-    user_prompt = _build_user_prompt(snapshot, analyst_reports, global_context)
+
+    prior_summary: str | None = None
+    if prior_newsletter_path:
+        prior_summary = _extract_prior_newsletter_summary(prior_newsletter_path)
+        if prior_summary:
+            logger.info(f"Director: loaded prior newsletter context from {prior_newsletter_path.name}")
+
+    user_prompt = _build_user_prompt(snapshot, analyst_reports, global_context, prior_summary)
 
     logger.info(f"Director agent: synthesizing {len(analyst_reports)} analyst reports")
 

@@ -1,4 +1,8 @@
 Good morning. Please produce today's portfolio brief.
+{% if prior_newsletter_summary %}
+## Context from Previous Newsletter
+{{ prior_newsletter_summary }}
+{% endif %}
 
 ## Portfolio Overview
 Date: {{ report_date }}

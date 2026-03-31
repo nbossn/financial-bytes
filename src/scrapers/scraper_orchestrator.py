@@ -13,10 +13,9 @@ from src.db.session import get_db
 from src.scrapers.base_scraper import ScrapedArticle, ScrapeResult
 from src.scrapers.cnbc_scraper import CNBCScraper
 from src.scrapers.finviz_scraper import FinvizScraper
+from src.scrapers.google_news_scraper import GoogleNewsScraper
 from src.scrapers.marketwatch_scraper import MarketWatchScraper
 from src.scrapers.morningstar_scraper import MorningstarScraper
-from src.scrapers.reuters_scraper import ReutersScraper
-from src.scrapers.seeking_alpha_scraper import SeekingAlphaScraper
 from src.scrapers.web_search_fallback import WebSearchFallback
 from src.scrapers.yahoo_finance_scraper import YahooFinanceScraper
 
@@ -109,21 +108,21 @@ def _load_cached_articles(ticker: str) -> list[ScrapedArticle] | None:
             .limit(settings.max_articles_per_ticker)
             .all()
         )
-    if not rows:
-        return None
-    logger.info(f"{ticker}: using {len(rows)} cached article(s) (scraped within lookback window)")
-    return [
-        ScrapedArticle(
-            ticker=r.ticker,
-            headline=r.headline,
-            url=r.url,
-            source=r.source,
-            body=r.body,
-            snippet=r.snippet,
-            published_at=r.published_at,
-        )
-        for r in rows
-    ]
+        if not rows:
+            return None
+        logger.info(f"{ticker}: using {len(rows)} cached article(s) (scraped within lookback window)")
+        return [
+            ScrapedArticle(
+                ticker=r.ticker,
+                headline=r.headline,
+                url=r.url,
+                source=r.source,
+                body=r.body,
+                snippet=r.snippet,
+                published_at=r.published_at,
+            )
+            for r in rows
+        ]
 
 
 def scrape_ticker(ticker: str, skip_cached: bool = True) -> list[ScrapedArticle]:
@@ -148,8 +147,7 @@ def scrape_ticker(ticker: str, skip_cached: bool = True) -> list[ScrapedArticle]
         CNBCScraper(),
         MarketWatchScraper(),
         MorningstarScraper(),
-        ReutersScraper(),
-        SeekingAlphaScraper(),
+        GoogleNewsScraper(),
     ]
 
     all_articles: list[ScrapedArticle] = []
