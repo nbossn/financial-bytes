@@ -1,0 +1,46 @@
+Perform a quantitative analysis of {{ ticker }}.
+
+## Quantitative Metrics ({{ period_days }}-day look-back vs {{ benchmark }})
+- Annualized Return: {{ annualized_return }}%
+- Annualized Volatility: {{ annualized_volatility }}%
+- Beta (vs {{ benchmark }}): {{ beta }}
+- Alpha (Jensen's, annualized): {{ alpha }}%
+- R-Squared: {{ r_squared }}
+- Correlation (vs {{ benchmark }}): {{ correlation }}
+- Sharpe Ratio: {{ sharpe_ratio }}
+- Sortino Ratio: {{ sortino_ratio }}
+- Max Drawdown (period): {{ max_drawdown }}%
+- Current Drawdown from Peak: {{ current_drawdown }}%
+- RSI(14): {{ rsi_14 }}
+- 1-Month Momentum: {{ momentum_1m }}%
+- 3-Month Momentum: {{ momentum_3m }}%
+- 6-Month Momentum: {{ momentum_6m }}%
+
+## Fundamental Context (Finviz)
+{{ fundamentals_text }}
+
+## Insider Activity Summary
+{{ insider_summary }}
+
+## Short Interest
+{{ short_summary }}
+
+---
+
+Produce a JSON object with this exact structure:
+{
+  "ticker": "{{ ticker }}",
+  "quant_summary": "<3-4 sentences: interpret beta/alpha in plain language, comment on risk-adjusted returns, flag any anomalies. Cite specific numbers.>",
+  "risk_profile": "<one of: Very Low, Low, Moderate, High, Very High>",
+  "risk_profile_rationale": "<1-2 sentences citing specific metrics>",
+  "return_quality": "<one of: Exceptional, Strong, Moderate, Weak, Poor> — based on Sharpe/Sortino vs typical thresholds (Sharpe >1 = Strong, >2 = Exceptional)>",
+  "beta_interpretation": "<1 sentence: what this beta means for a portfolio>",
+  "alpha_interpretation": "<1 sentence: is this stock generating excess return above what its market risk justifies?>",
+  "momentum_signal": "<one of: Strong Uptrend, Uptrend, Neutral, Downtrend, Strong Downtrend>",
+  "momentum_rationale": "<1 sentence citing 1m/3m/6m momentum and RSI>",
+  "drawdown_assessment": "<1 sentence on current drawdown risk>",
+  "insider_signal": "<Bullish, Neutral, or Bearish based on recent insider buying/selling pattern>",
+  "short_squeeze_risk": "<Low, Moderate, or High — based on short float, short ratio, and days-to-cover>",
+  "key_quant_flags": ["<flag 1>", "<flag 2>", ...],
+  "fair_value_note": "<1 sentence: does P/S or P/B relative to growth rate suggest over/under-valuation? Use PEG if available.>"
+}

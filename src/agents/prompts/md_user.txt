@@ -1,0 +1,71 @@
+Develop trade strategies for {{ ticker }} — {{ company_name }}.
+
+## Current Market Data
+- Current Price: ${{ current_price }}
+- 52W Range: ${{ low_52w }} – ${{ high_52w }}
+- Market Cap: {{ market_cap }}
+- Average Daily Volume: {{ avg_volume }}
+- Options Available: {{ options_available }}
+- Short Floatable: {{ shortable }}
+
+## Analyst Ratings Summary
+{{ analyst_ratings_text }}
+
+## Quantitative Assessment (from Quant Analyst)
+- Risk Profile: {{ risk_profile }}
+- Return Quality: {{ return_quality }}
+- Beta: {{ beta }} | Alpha: {{ alpha }}%
+- Sharpe: {{ sharpe }} | Sortino: {{ sortino }}
+- Max Drawdown (1Y): {{ max_drawdown }}%
+- Current Drawdown from Peak: {{ current_drawdown }}%
+- Momentum Signal: {{ momentum_signal }}
+- Short Squeeze Risk: {{ short_squeeze_risk }}
+- Insider Signal: {{ insider_signal }}
+{{ quant_flags_text }}
+
+## Fundamental Assessment (from Senior Analyst)
+{{ analyst_summary }}
+Recommendation: {{ analyst_recommendation }} ({{ analyst_confidence }}% confidence)
+Key Catalysts: {{ catalysts_text }}
+Key Risks: {{ risks_text }}
+
+## Fundamental Data
+{{ fundamentals_text }}
+
+## Recent Insider Activity
+{{ insider_text }}
+
+## Recent Analyst Rating Changes
+{{ ratings_text }}
+
+---
+
+Produce a JSON object with this exact structure:
+{
+  "ticker": "{{ ticker }}",
+  "md_thesis": "<2-3 sentences: the overarching investment thesis from a trading perspective. Include price action context, catalyst timeline, and primary risk.>",
+  "overall_stance": "<one of: Aggressive Long, Long, Cautious Long, Neutral, Cautious Short, Short, Aggressive Short>",
+  "conviction": "<one of: High, Medium, Low>",
+  "plays": [
+    {
+      "play_type": "<e.g. 'Long Equity', 'Short Equity', 'Bull Call Spread', 'Put Hedge', 'Cash-Secured Put', 'Covered Call', 'Straddle', 'Collar'>",
+      "time_horizon": "<short-term|swing|position>",
+      "thesis": "<1-2 sentences explaining why this specific structure>",
+      "entry": "<price level or trigger condition>",
+      "target": "<price target or options P&L target>",
+      "stop_loss": "<price level or max loss%>",
+      "position_size": "<suggested allocation, e.g. '2-3% of portfolio' or 'half position'>",
+      "specific_structure": "<if options: exact structure, e.g. 'Buy $22 call / Sell $28 call, 60 days out'; if equity: 'market order on open below $21'>",
+      "risk_reward": "<e.g. '1:2.5'>",
+      "conviction": "<High|Medium|Low>"
+    }
+  ],
+  "key_levels": {
+    "strong_support": "<price>",
+    "resistance": "<price>",
+    "breakout_trigger": "<price or condition>"
+  },
+  "macro_considerations": "<1 sentence on macro/sector tailwinds or headwinds relevant to this trade>",
+  "insider_warning": "<null or a specific warning if insider selling pattern is concerning>",
+  "position_management": "<1-2 sentences on how to manage the position post-entry — when to add, when to cut>"
+}

@@ -410,6 +410,97 @@ def test_newsletter(output_dir: str) -> None:
             click.echo(f"  {fmt.upper()}: {path}")
 
 
+# ── ticker-report ─────────────────────────────────────────────────
+@cli.command("ticker-report")
+@click.argument("ticker")
+@click.option("--date", "-d", default=None, callback=_parse_date, help="Report date (YYYY-MM-DD)")
+@click.option("--skip-scrape", is_flag=True, help="Use cached articles from DB")
+@click.option("--output-dir", default="newsletters", show_default=True, help="Output directory")
+def ticker_report(ticker: str, date: "date | None", skip_scrape: bool, output_dir: str) -> None:
+    """Scrape, analyse, and report on a single TICKER (watchlist / deep-dive).
+
+    Does not require the ticker to be in the portfolio. Scrapes fresh data,
+    fetches market signals, runs the analyst agent, and writes a standalone
+    Markdown + HTML report to OUTPUT_DIR/ticker-reports/.
+
+    Example:
+      financial-bytes ticker-report FIG
+    """
+    from src.pipeline.ticker_pipeline import run_ticker_pipeline
+
+    t = _validate_ticker(ticker)
+    result = run_ticker_pipeline(
+        ticker=t,
+        report_date=date,
+        skip_scrape=skip_scrape,
+        output_dir=_validate_output_dir(output_dir),
+    )
+    rpt = result["analyst_report"]
+    click.echo("")
+    click.echo(f"{'=' * 50}")
+    click.echo(f"  {t} — Ticker Report ({result['report_date']})")
+    click.echo(f"{'=' * 50}")
+    click.echo(f"  Recommendation : {rpt.recommendation}")
+    click.echo(f"  Confidence     : {rpt.confidence:.0%}")
+    click.echo(f"  Sentiment      : {rpt.sentiment_label} ({rpt.sentiment:+.2f})")
+    if rpt.price_target:
+        click.echo(f"  Price Target   : ${rpt.price_target:.2f}")
+    if rpt.analyst_consensus:
+        click.echo(f"  Consensus      : {rpt.analyst_consensus}")
+    click.echo("")
+    click.echo("  Summary:")
+    click.echo(f"  {rpt.summary}")
+    click.echo("")
+    if rpt.key_catalysts:
+        click.echo("  Key Catalysts:")
+        for c in rpt.key_catalysts:
+            click.echo(f"    • {c}")
+        click.echo("")
+    if rpt.key_risks:
+        click.echo("  Key Risks:")
+        for r in rpt.key_risks:
+            click.echo(f"    • {r}")
+        click.echo("")
+    # Quant section
+    qrpt = result.get("quant_report")
+    if qrpt:
+        click.echo(f"{'─' * 50}")
+        click.echo("  Quantitative Analysis:")
+        click.echo(f"    Beta         : {qrpt.beta or 'N/A'}")
+        click.echo(f"    Alpha (ann.) : {f'{qrpt.alpha_annualized:+.2f}%' if qrpt.alpha_annualized is not None else 'N/A'}")
+        click.echo(f"    Sharpe       : {qrpt.sharpe_ratio or 'N/A'}")
+        click.echo(f"    Sortino      : {qrpt.sortino_ratio or 'N/A'}")
+        click.echo(f"    Ann. Return  : {f'{qrpt.annualized_return:+.1f}%' if qrpt.annualized_return is not None else 'N/A'}")
+        click.echo(f"    Volatility   : {f'{qrpt.annualized_volatility:.1f}%' if qrpt.annualized_volatility is not None else 'N/A'}")
+        click.echo(f"    Max Drawdown : {f'{qrpt.max_drawdown:.1f}%' if qrpt.max_drawdown is not None else 'N/A'}")
+        click.echo(f"    Risk Profile : {qrpt.risk_profile}")
+        click.echo(f"    Momentum     : {qrpt.momentum_signal}")
+        click.echo(f"    Short Squeeze: {qrpt.short_squeeze_risk}")
+        click.echo(f"    Insider      : {qrpt.insider_signal}")
+
+    # MD section
+    mdrpt = result.get("md_report")
+    if mdrpt:
+        click.echo(f"{'─' * 50}")
+        click.echo(f"  MD Stance: {mdrpt.overall_stance} (Conviction: {mdrpt.conviction})")
+        click.echo(f"  {mdrpt.md_thesis}")
+        if mdrpt.insider_warning:
+            click.echo(f"  ⚠  {mdrpt.insider_warning}")
+        click.echo("")
+        for i, play in enumerate(mdrpt.plays, 1):
+            click.echo(f"  Play {i}: {play.play_type} [{play.time_horizon}] — {play.conviction}")
+            click.echo(f"    Entry: {play.entry}  |  Target: {play.target}  |  Stop: {play.stop_loss}")
+            click.echo(f"    R/R: {play.risk_reward}  |  Size: {play.position_size}")
+            click.echo(f"    Structure: {play.specific_structure}")
+            click.echo("")
+
+    click.echo(f"{'=' * 50}")
+    for fmt, path in result["paths"].items():
+        if path:
+            click.echo(f"  {fmt.upper()}: {path}")
+    click.echo(f"{'=' * 50}")
+
+
 # ── audit ─────────────────────────────────────────────────────────
 @cli.command()
 def audit() -> None:

@@ -13,7 +13,11 @@ class FinvizFundamentals(BaseModel):
     peg_ratio: float | None = None
     ps_ratio: float | None = None
     pb_ratio: float | None = None
+    pc_ratio: float | None = None
     pfcf_ratio: float | None = None
+    ev_ebitda: float | None = None
+    ev_sales: float | None = None
+    enterprise_value_text: str | None = None
     # Earnings
     eps_ttm: float | None = None
     eps_next_year: float | None = None
@@ -22,9 +26,11 @@ class FinvizFundamentals(BaseModel):
     eps_past_5y: float | None = None
     eps_next_5y: float | None = None
     eps_qoq: float | None = None
+    eps_yoy_ttm: float | None = None
     # Growth
     sales_past_5y: float | None = None
     sales_qoq: float | None = None
+    sales_yoy_ttm: float | None = None
     # Profitability
     profit_margin: float | None = None
     oper_margin: float | None = None
@@ -32,6 +38,7 @@ class FinvizFundamentals(BaseModel):
     roa: float | None = None
     roe: float | None = None
     roi: float | None = None
+    roic: float | None = None
     # Financial strength
     current_ratio: float | None = None
     quick_ratio: float | None = None
@@ -46,11 +53,21 @@ class FinvizFundamentals(BaseModel):
     dividend: float | None = None
     dividend_pct: float | None = None
     target_price: float | None = None
+    employees: float | None = None
+    ipo_date: str | None = None
+    earnings_date: str | None = None
+    prev_close: float | None = None
+    current_price_raw: float | None = None
+    price_change_pct: float | None = None
+    volume_raw: str | None = None
+    analyst_recom: float | None = None  # 1=Strong Buy .. 5=Strong Sell
     # Ownership / float
     shares_outstanding_text: str | None = None
     shares_float_text: str | None = None
     short_float: float | None = None
     short_ratio: float | None = None
+    short_interest_text: str | None = None
+    option_short: str | None = None
     insider_own: float | None = None
     inst_own: float | None = None
     insider_trans: float | None = None
@@ -70,6 +87,55 @@ class FinvizFundamentals(BaseModel):
     volatility_week: float | None = None
     volatility_month: float | None = None
     atr: float | None = None
+
+
+class InsiderTrade(BaseModel):
+    name: str
+    relationship: str
+    date: str
+    transaction: str  # Buy, Sale, Option Exercise, etc.
+    cost: float | None = None      # price per share
+    shares: float | None = None
+    value_usd: float | None = None
+    shares_total: float | None = None
+
+
+class FinvizAnalystRating(BaseModel):
+    date: str
+    action: str   # Initiated, Upgrade, Downgrade, Reiterated, Resumed
+    analyst: str
+    rating_change: str
+    price_target: float | None = None
+
+
+class QuantMetrics(BaseModel):
+    """Computed quantitative metrics for a ticker over the look-back period."""
+    ticker: str
+    benchmark: str = "SPY"
+    period_days: int = 252
+    # Returns
+    annualized_return: float | None = None       # %
+    annualized_volatility: float | None = None   # %
+    # Risk-adjusted
+    sharpe_ratio: float | None = None
+    sortino_ratio: float | None = None
+    # Market relationship
+    beta: float | None = None
+    alpha_annualized: float | None = None        # Jensen's alpha %
+    r_squared: float | None = None               # 0-1
+    correlation: float | None = None             # vs benchmark
+    # Drawdown
+    max_drawdown: float | None = None            # %
+    current_drawdown: float | None = None        # % from all-time high in window
+    # Momentum
+    rsi_14: float | None = None
+    momentum_1m: float | None = None             # 1-month return %
+    momentum_3m: float | None = None             # 3-month return %
+    momentum_6m: float | None = None             # 6-month return %
+    # Notes
+    data_start: str | None = None
+    data_end: str | None = None
+    error: str | None = None                     # set if computation failed
 
 
 class BenzingaArticle(BaseModel):
@@ -127,8 +193,11 @@ class TickerSignals(BaseModel):
     quote: QuoteSnapshot | None = None
     news: list[BenzingaArticle] = Field(default_factory=list)
     analyst_ratings: list[AnalystRating] = Field(default_factory=list)
+    finviz_analyst_ratings: list[FinvizAnalystRating] = Field(default_factory=list)
+    insider_trades: list[InsiderTrade] = Field(default_factory=list)
     technicals: TechnicalIndicators | None = None
     fundamentals: FinvizFundamentals | None = None
+    quant_metrics: QuantMetrics | None = None
     sec_filings: list[dict] = Field(default_factory=list)
     consensus_rating: str | None = None
     consensus_price_target: Decimal | None = None

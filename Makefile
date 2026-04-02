@@ -1,4 +1,5 @@
-.PHONY: install run test lint audit migrate scrape analyze newsletter email audit-fs test-newsletter
+.PHONY: install run test lint audit migrate scrape analyze newsletter email audit-fs test-newsletter \
+        setup-local install-local migrate-local ticker-report
 
 install:
 	poetry install
@@ -46,3 +47,40 @@ db-shell:
 
 logs:
 	tail -f logs/financial_bytes.log
+
+# ── Local dev (no poetry, no postgres) ───────────────────────────
+# 1. Edit .env (fill in ANTHROPIC_API_KEY at minimum)
+# 2. Run: make setup-local
+# 3. Run: make ticker-report TICKER=FIG
+
+setup-local: install-local migrate-local
+	@echo ""
+	@echo "Local setup complete. Run a ticker report with:"
+	@echo "  make ticker-report TICKER=FIG"
+	@echo ""
+
+install-local:
+	@if [ ! -f .env ]; then \
+	  cp .env.local .env; \
+	  echo "Created .env from .env.local — edit it and add your ANTHROPIC_API_KEY"; \
+	fi
+	@if [ ! -d .venv ]; then \
+	  python3.10 -m venv .venv; \
+	fi
+	.venv/bin/pip install --quiet --upgrade pip
+	.venv/bin/pip install --quiet \
+	  anthropic pydantic "pydantic-settings>=2.3" sqlalchemy alembic \
+	  "psycopg2-binary>=2.9" jinja2 click loguru tenacity \
+	  python-dotenv httpx "beautifulsoup4>=4.12" lxml selenium \
+	  webdriver-manager apscheduler pytz python-dateutil defusedxml \
+	  weasyprint markdown
+	@echo "Dependencies installed."
+
+migrate-local:
+	@mkdir -p logs newsletters
+	PYTHONPATH=. .venv/bin/alembic upgrade head
+	@echo "Database migrated."
+
+ticker-report:
+	PYTHONPATH=. .venv/bin/python -m src.cli --log-level INFO ticker-report $(TICKER) --skip-email 2>/dev/null || \
+	PYTHONPATH=. .venv/bin/python -m src.cli --log-level INFO ticker-report $(TICKER)
