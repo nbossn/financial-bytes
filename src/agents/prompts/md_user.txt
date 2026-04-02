@@ -40,32 +40,33 @@ Key Risks: {{ risks_text }}
 
 ---
 
-Produce a JSON object with this exact structure:
+Produce a JSON object. Keep ALL text fields to 1 sentence maximum. No jargon without a plain-English explanation in parentheses.
+
 {
   "ticker": "{{ ticker }}",
-  "md_thesis": "<2-3 sentences: the overarching investment thesis from a trading perspective. Include price action context, catalyst timeline, and primary risk.>",
+  "md_thesis": "<1 sentence: the single most important trading fact — what is this stock doing and why does it matter right now?>",
   "overall_stance": "<one of: Aggressive Long, Long, Cautious Long, Neutral, Cautious Short, Short, Aggressive Short>",
   "conviction": "<one of: High, Medium, Low>",
   "plays": [
     {
       "play_type": "<e.g. 'Long Equity', 'Short Equity', 'Bull Call Spread', 'Put Hedge', 'Cash-Secured Put', 'Covered Call', 'Straddle', 'Collar'>",
       "time_horizon": "<short-term|swing|position>",
-      "thesis": "<1-2 sentences explaining why this specific structure>",
-      "entry": "<price level or trigger condition>",
+      "thesis": "<1 sentence: why this structure makes sense given the risk profile and catalyst>",
+      "entry": "<price level or trigger condition — be specific, no prose>",
       "target": "<price target or options P&L target>",
-      "stop_loss": "<price level or max loss%>",
-      "position_size": "<suggested allocation, e.g. '2-3% of portfolio' or 'half position'>",
-      "specific_structure": "<if options: exact structure, e.g. 'Buy $22 call / Sell $28 call, 60 days out'; if equity: 'market order on open below $21'>",
+      "stop_loss": "<price level or max loss — be specific>",
+      "position_size": "<1 sentence: recommended allocation and why it is sized this way>",
+      "specific_structure": "<if options: exact structure e.g. 'Buy $22 call / Sell $30 call, 90 days out, ~$2.00 debit'; if equity: 'limit order below $21.00'>",
       "risk_reward": "<e.g. '1:2.5'>",
       "conviction": "<High|Medium|Low>"
     }
   ],
   "key_levels": {
-    "strong_support": "<price>",
-    "resistance": "<price>",
-    "breakout_trigger": "<price or condition>"
+    "strong_support": "<price — 1 short phrase explaining why this is support>",
+    "resistance": "<price — 1 short phrase explaining why this is resistance>",
+    "breakout_trigger": "<price or condition — 1 short phrase on what a breakout signals>"
   },
-  "macro_considerations": "<1 sentence on macro/sector tailwinds or headwinds relevant to this trade>",
-  "insider_warning": "<null or a specific warning if insider selling pattern is concerning>",
-  "position_management": "<1-2 sentences on how to manage the position post-entry — when to add, when to cut>"
+  "macro_considerations": "<1 sentence: one macro factor that matters most to this stock right now, in plain English>",
+  "insider_warning": "<null, or 1 sentence citing specific numbers if insider selling is a red flag>",
+  "position_management": "<1 sentence: the single most important rule for managing this position — when to cut or add>"
 }

@@ -43,6 +43,10 @@ class QuantReport(BaseModel):
     annualized_return: float | None = None
     annualized_volatility: float | None = None
     max_drawdown: float | None = None
+    momentum_1m: float | None = None
+    momentum_3m: float | None = None
+    momentum_6m: float | None = None
+    rsi_14: float | None = None
 
 
 def _format_fundamentals(f: FinvizFundamentals | None) -> str:
@@ -218,6 +222,10 @@ def run_quant_agent(
         annualized_return=quant_metrics.annualized_return,
         annualized_volatility=quant_metrics.annualized_volatility,
         max_drawdown=quant_metrics.max_drawdown,
+        momentum_1m=quant_metrics.momentum_1m,
+        momentum_3m=quant_metrics.momentum_3m,
+        momentum_6m=quant_metrics.momentum_6m,
+        rsi_14=quant_metrics.rsi_14,
         **{k: v for k, v in data.items() if k != "ticker"},
     )
     logger.info(

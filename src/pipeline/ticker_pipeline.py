@@ -50,14 +50,14 @@ def run_ticker_pipeline(
                 .limit(settings.max_articles_per_ticker)
                 .all()
             )
-        articles = [
-            ScrapedArticle(
-                ticker=r.ticker, headline=r.headline, url=r.url,
-                source=r.source, body=r.body, snippet=r.snippet,
-                published_at=r.published_at,
-            )
-            for r in rows
-        ]
+            articles = [
+                ScrapedArticle(
+                    ticker=r.ticker, headline=r.headline, url=r.url,
+                    source=r.source, body=r.body, snippet=r.snippet,
+                    published_at=r.published_at,
+                )
+                for r in rows
+            ]
         logger.info(f"      {len(articles)} cached article(s) loaded")
     else:
         logger.info(f"[1/5] Scraping articles for {ticker}...")
@@ -229,19 +229,38 @@ def _stance_emoji(stance: str) -> str:
 
 def _build_markdown(ticker, analyst, quant, md, current_price, report_date) -> str:
     rec_emoji = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(analyst.recommendation, "⚪")
-    price_line = f"**Current Price:** ${current_price:.2f}" if current_price else ""
-    pt_line = f"**Analyst Price Target:** ${analyst.price_target:.2f}" if analyst.price_target else ""
+    price_str = f"${current_price:.2f}" if current_price else "N/A"
+    pt_str = f"${analyst.price_target:.2f}" if analyst.price_target else "N/A"
 
-    catalysts = "\n".join(f"- {c}" for c in analyst.key_catalysts) or "- None identified"
-    risks = "\n".join(f"- {r}" for r in analyst.key_risks) or "- None identified"
-
-    # Quant section
     def _n(v, fmt=".2f", suffix="", default="N/A"):
         return f"{v:{fmt}}{suffix}" if v is not None else default
 
+    # ── Quant metrics table ────────────────────────────────────────
+    quant_rows = [
+        ("Beta (market sensitivity)", _n(quant.beta, ".3f"), quant.beta_interpretation),
+        ("Alpha (excess return vs risk)", _n(quant.alpha_annualized, "+.2f", "%"), quant.alpha_interpretation),
+        ("Sharpe Ratio (return per unit of risk)", _n(quant.sharpe_ratio, ".3f"), quant.return_quality),
+        ("Sortino Ratio (return per unit of downside risk)", _n(quant.sortino_ratio, ".3f"), ""),
+        ("Annualized Return", _n(quant.annualized_return, "+.1f", "%"), ""),
+        ("Annualized Volatility (price swings)", _n(quant.annualized_volatility, ".1f", "%"), ""),
+        ("Max Drawdown (worst peak-to-trough drop)", _n(quant.max_drawdown, ".1f", "%"), quant.drawdown_assessment),
+    ]
+    quant_table = "| Metric | Value | What It Means |\n|--------|-------|---------------|\n"
+    for label, val, interp in quant_rows:
+        quant_table += f"| {label} | {val} | {interp} |\n"
+
     quant_flags = "\n".join(f"- {f}" for f in quant.key_quant_flags) or "- None"
 
-    # MD plays section
+    # ── Momentum table ─────────────────────────────────────────────
+    m = quant
+    momentum_table = (
+        "| 1-Month | 3-Month | 6-Month | RSI(14) | Signal |\n"
+        "|---------|---------|---------|---------|--------|\n"
+        f"| {_n(m.momentum_1m, '+.1f', '%')} | {_n(m.momentum_3m, '+.1f', '%')} "
+        f"| {_n(m.momentum_6m, '+.1f', '%')} | {_n(m.rsi_14, '.1f')} | **{m.momentum_signal}** |\n"
+    ) if hasattr(m, 'momentum_1m') else ""
+
+    # ── MD plays section ───────────────────────────────────────────
     plays_md = ""
     for i, play in enumerate(md.plays, 1):
         plays_md += f"""
@@ -249,107 +268,84 @@ def _build_markdown(ticker, analyst, quant, md, current_price, report_date) -> s
 
 {play.thesis}
 
-| Field | Value |
-|-------|-------|
+| | |
+|--|--|
 | **Entry** | {play.entry} |
 | **Target** | {play.target} |
 | **Stop Loss** | {play.stop_loss} |
+| **Structure** | {play.specific_structure} |
 | **Position Size** | {play.position_size} |
 | **Risk/Reward** | {play.risk_reward} |
-| **Structure** | {play.specific_structure} |
 """
 
     key_levels = ""
     if md.key_levels:
         kl = md.key_levels
-        key_levels = f"""
-**Key Levels:**
-- Strong Support: {kl.strong_support or 'N/A'}
-- Resistance: {kl.resistance or 'N/A'}
-- Breakout Trigger: {kl.breakout_trigger or 'N/A'}
-"""
+        key_levels = (
+            f"\n| Level | Price | Why It Matters |\n|-------|-------|----------------|\n"
+            f"| Strong Support | {kl.strong_support or 'N/A'} | Floor where buyers have stepped in |\n"
+            f"| Resistance | {kl.resistance or 'N/A'} | Ceiling where sellers have dominated |\n"
+            f"| Breakout Trigger | {kl.breakout_trigger or 'N/A'} | A close above this shifts bias to bullish |\n"
+        )
 
     insider_warn = f"\n> **⚠️ Insider Warning:** {md.insider_warning}\n" if md.insider_warning else ""
 
-    return f"""# {ticker} — Deep-Dive Analysis Report
+    catalysts = "\n".join(f"- {c}" for c in analyst.key_catalysts) or "- None identified"
+    risks = "\n".join(f"- {r}" for r in analyst.key_risks) or "- None identified"
 
-**Date:** {report_date.strftime("%B %d, %Y")}
-{price_line}
+    return f"""# {ticker} — Deep-Dive Report  ·  {report_date.strftime("%B %d, %Y")}
+
+| Price | Analyst Target | Recommendation | Sentiment | Articles |
+|-------|---------------|----------------|-----------|----------|
+| {price_str} | {pt_str} | {rec_emoji} **{analyst.recommendation}** ({analyst.confidence:.0%}) | {analyst.sentiment_label} ({analyst.sentiment:+.2f}) | {analyst.article_count} |
 
 ---
 
-## Executive Summary (Senior Analyst)
-
-{rec_emoji} **{analyst.recommendation}** — Confidence: {analyst.confidence:.0%} | Sentiment: {analyst.sentiment_label}
+## Analyst View
 
 {analyst.summary}
 
 {analyst.recommendation_context}
 
+**Catalysts:** {" · ".join(analyst.key_catalysts) if analyst.key_catalysts else "None identified"}
+
+**Risks:** {" · ".join(analyst.key_risks) if analyst.key_risks else "None identified"}
+
 ---
 
-## Managing Director — Trade Stance & Plays
+## Trade Stance
 
 {_stance_emoji(md.overall_stance)} **{md.overall_stance}** | Conviction: **{md.conviction}**
 
 {md.md_thesis}
 {insider_warn}
 {plays_md}
+### Key Levels
 {key_levels}
-**Macro Context:** {md.macro_considerations}
+**Macro:** {md.macro_considerations}
 
 **Position Management:** {md.position_management}
 
 ---
 
-## Quantitative Analysis
+## Quantitative Snapshot
 
-| Metric | Value | Interpretation |
-|--------|-------|----------------|
-| Beta (vs SPY) | {_n(quant.beta, '.3f')} | {quant.beta_interpretation} |
-| Alpha (annualized) | {_n(quant.alpha_annualized, '+.2f', '%')} | {quant.alpha_interpretation} |
-| Sharpe Ratio | {_n(quant.sharpe_ratio, '.3f')} | {quant.return_quality} |
-| Sortino Ratio | {_n(quant.sortino_ratio, '.3f')} | |
-| Annualized Return | {_n(quant.annualized_return, '+.1f', '%')} | |
-| Annualized Volatility | {_n(quant.annualized_volatility, '.1f', '%')} | |
-| Max Drawdown (1Y) | {_n(quant.max_drawdown, '.1f', '%')} | {quant.drawdown_assessment} |
+{quant_table}
 
 **Risk Profile:** {quant.risk_profile} — {quant.risk_profile_rationale}
 
-**Momentum:** {quant.momentum_signal} — {quant.momentum_rationale}
+**Fair Value:** {quant.fair_value_note}
 
-**Short Squeeze Risk:** {quant.short_squeeze_risk} | **Insider Signal:** {quant.insider_signal}
+### Momentum  *(how the stock has trended over time)*
+{momentum_table}
+**Short Squeeze Risk** *(what happens if too many short-sellers are forced to buy at once)*: {quant.short_squeeze_risk} | **Insider Signal** *(are executives buying or selling their own stock?)*: {quant.insider_signal}
 
-**Fair Value Note:** {quant.fair_value_note}
-
-**Quantitative Flags:**
+### Quant Flags
 {quant_flags}
 
 ---
 
-## Sentiment & Fundamentals
-
-**Sentiment Score:** {_sentiment_bar(analyst.sentiment)}
-{pt_line}
-
----
-
-## Key Catalysts
-
-{catalysts}
-
----
-
-## Key Risks
-
-{risks}
-
----
-
-## Data Coverage
-
-- Articles analyzed: {analyst.article_count}
-- Report date: {report_date}
+*Report date: {report_date} · Articles analyzed: {analyst.article_count}*
 """
 
 

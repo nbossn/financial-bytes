@@ -1,25 +1,22 @@
-Perform a quantitative analysis of {{ ticker }}.
+Quantitative analysis for {{ ticker }}.
 
-## Quantitative Metrics ({{ period_days }}-day look-back vs {{ benchmark }})
+## Price & Return Data ({{ period_days }}-day period vs {{ benchmark }})
 - Annualized Return: {{ annualized_return }}%
 - Annualized Volatility: {{ annualized_volatility }}%
-- Beta (vs {{ benchmark }}): {{ beta }}
-- Alpha (Jensen's, annualized): {{ alpha }}%
+- Beta: {{ beta }}
+- Alpha (annualized): {{ alpha }}%
 - R-Squared: {{ r_squared }}
-- Correlation (vs {{ benchmark }}): {{ correlation }}
 - Sharpe Ratio: {{ sharpe_ratio }}
 - Sortino Ratio: {{ sortino_ratio }}
-- Max Drawdown (period): {{ max_drawdown }}%
+- Max Drawdown: {{ max_drawdown }}%
 - Current Drawdown from Peak: {{ current_drawdown }}%
 - RSI(14): {{ rsi_14 }}
-- 1-Month Momentum: {{ momentum_1m }}%
-- 3-Month Momentum: {{ momentum_3m }}%
-- 6-Month Momentum: {{ momentum_6m }}%
+- 1M / 3M / 6M Momentum: {{ momentum_1m }}% / {{ momentum_3m }}% / {{ momentum_6m }}%
 
-## Fundamental Context (Finviz)
+## Fundamentals
 {{ fundamentals_text }}
 
-## Insider Activity Summary
+## Insider Activity
 {{ insider_summary }}
 
 ## Short Interest
@@ -27,20 +24,21 @@ Perform a quantitative analysis of {{ ticker }}.
 
 ---
 
-Produce a JSON object with this exact structure:
+Produce a JSON object. Keep ALL text fields to 1 sentence maximum. No jargon without a plain-English explanation in parentheses.
+
 {
   "ticker": "{{ ticker }}",
-  "quant_summary": "<3-4 sentences: interpret beta/alpha in plain language, comment on risk-adjusted returns, flag any anomalies. Cite specific numbers.>",
-  "risk_profile": "<one of: Very Low, Low, Moderate, High, Very High>",
-  "risk_profile_rationale": "<1-2 sentences citing specific metrics>",
-  "return_quality": "<one of: Exceptional, Strong, Moderate, Weak, Poor> — based on Sharpe/Sortino vs typical thresholds (Sharpe >1 = Strong, >2 = Exceptional)>",
-  "beta_interpretation": "<1 sentence: what this beta means for a portfolio>",
-  "alpha_interpretation": "<1 sentence: is this stock generating excess return above what its market risk justifies?>",
-  "momentum_signal": "<one of: Strong Uptrend, Uptrend, Neutral, Downtrend, Strong Downtrend>",
-  "momentum_rationale": "<1 sentence citing 1m/3m/6m momentum and RSI>",
-  "drawdown_assessment": "<1 sentence on current drawdown risk>",
-  "insider_signal": "<Bullish, Neutral, or Bearish based on recent insider buying/selling pattern>",
-  "short_squeeze_risk": "<Low, Moderate, or High — based on short float, short ratio, and days-to-cover>",
-  "key_quant_flags": ["<flag 1>", "<flag 2>", ...],
-  "fair_value_note": "<1 sentence: does P/S or P/B relative to growth rate suggest over/under-valuation? Use PEG if available.>"
+  "quant_summary": "<1-2 sentences: the single most important takeaway from the numbers. Plain English.>",
+  "risk_profile": "<Very Low | Low | Moderate | High | Very High>",
+  "risk_profile_rationale": "<1 sentence citing 1-2 specific numbers>",
+  "return_quality": "<Exceptional | Strong | Moderate | Weak | Poor>",
+  "beta_interpretation": "<1 sentence: what beta means for this stock in plain English, e.g. 'Moves ~1.9x as much as the S&P 500 on any given day'>",
+  "alpha_interpretation": "<1 sentence: is the stock earning more or less than its risk level justifies? Plain English.>",
+  "momentum_signal": "<Strong Uptrend | Uptrend | Neutral | Downtrend | Strong Downtrend>",
+  "momentum_rationale": "<1 sentence: cite the momentum numbers and what they mean>",
+  "drawdown_assessment": "<1 sentence on drawdown severity>",
+  "insider_signal": "<Bullish | Neutral | Bearish>",
+  "short_squeeze_risk": "<Low | Moderate | High>",
+  "key_quant_flags": ["<flag — max 15 words each>", ...],
+  "fair_value_note": "<1 sentence: over or undervalued relative to growth? Use plain English.>"
 }
