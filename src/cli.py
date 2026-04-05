@@ -293,8 +293,32 @@ def analyse(tickers: tuple[str, ...], date: date | None) -> None:
 @click.option("--output-dir", default="newsletters", show_default=True)
 @click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
               help="Portfolio identifier to regenerate newsletter for")
-def newsletter(date: date | None, skip_email: bool, output_dir: str, portfolio_name: str) -> None:
-    """Regenerate newsletter from existing DB data and optionally send."""
+@click.option("--force", is_flag=True, help="Re-run full pipeline even if newsletter already exists")
+def newsletter(date: date | None, skip_email: bool, output_dir: str, portfolio_name: str, force: bool) -> None:
+    """Regenerate newsletter from existing DB data and optionally send.
+
+    If a rendered newsletter already exists for the given date and portfolio,
+    skips the pipeline and sends directly from the existing files (fast path).
+    Use --force to re-run the full pipeline regardless.
+    """
+    report_date = date or datetime.now().date()
+    out_dir = _validate_output_dir(f"{output_dir}/{portfolio_name}")
+    html_path = out_dir / f"{report_date.strftime('%Y-%m-%d')}.html"
+
+    if not force and html_path.exists():
+        logger.info(f"Newsletter already exists for {portfolio_name} on {report_date} — sending from files")
+        if not skip_email:
+            from src.delivery.email_sender import send_from_files
+            from src.portfolio.portfolio_config import load_portfolio_defs
+            defs = {p.name: p for p in load_portfolio_defs()}
+            recipients = defs[portfolio_name].email_recipients if portfolio_name in defs else None
+            send_from_files(report_date=report_date, output_dir=out_dir, recipients=recipients)
+        for ext in ("html", "md", "pdf"):
+            p = out_dir / f"{report_date.strftime('%Y-%m-%d')}.{ext}"
+            if p.exists():
+                click.echo(f"  {ext.upper()}: {p}")
+        return
+
     from src.pipeline.main_pipeline import run_pipeline
     result = run_pipeline(
         report_date=date,
