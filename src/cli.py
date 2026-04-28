@@ -102,6 +102,38 @@ def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir,
     if transactions and portfolio:
         raise click.UsageError("Specify either --portfolio or --transactions, not both.")
 
+    # Special sentinel: --portfolio robinhood pulls live positions via robin_stocks
+    if portfolio and portfolio.lower() == "robinhood":
+        from src.portfolio.robinhood_reader import read_robinhood_holdings, export_robinhood_to_csv, RobinhoodAuthError, RobinhoodReadError
+        import tempfile, os as _os
+
+        try:
+            rh_holdings = read_robinhood_holdings()
+        except (RobinhoodAuthError, RobinhoodReadError) as e:
+            raise click.UsageError(str(e))
+
+        click.echo(f"Robinhood: {len(rh_holdings)} holdings — {[h.ticker for h in rh_holdings]}")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, prefix="fb_rh_") as tmp:
+            tmp_path = tmp.name
+        try:
+            export_robinhood_to_csv(rh_holdings, tmp_path)
+            from src.pipeline.main_pipeline import run_pipeline
+            result = run_pipeline(
+                portfolio_csv=tmp_path,
+                report_date=date,
+                skip_scrape=skip_scrape,
+                skip_email=skip_email,
+                output_dir=_validate_output_dir(output_dir),
+                portfolio_name=portfolio_name,
+                portfolio_label=portfolio_label,
+                email_recipients=recipients,
+            )
+        finally:
+            _os.unlink(tmp_path)
+        click.echo(f"Done. Status: {result['status']}")
+        return
+
     recipients = list(email_recipients) if email_recipients else None
 
     if transactions:
@@ -185,6 +217,49 @@ def import_transactions(csv_path: str, output: str | None, dry_run: bool) -> Non
     dest = Path(output) if output else Path(settings.portfolio_csv_path)
     export_holdings_to_csv(holdings, dest)
     click.echo(f"\nPortfolio written to {dest}")
+
+
+# ── robinhood-import ─────────────────────────────────────────────
+@cli.command("robinhood-import")
+@click.option("--output", "-o", default="portfolio-robinhood.csv",
+              show_default=True, help="Write derived portfolio CSV to this path")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing any files")
+def robinhood_import(output: str, dry_run: bool) -> None:
+    """Pull live holdings from Robinhood and write a portfolio CSV.
+
+    Uses ROBINHOOD_EMAIL, ROBINHOOD_PASSWORD, ROBINHOOD_MFA_SECRET from .env.
+    Output CSV is compatible with `run --portfolio <file>`.
+
+    Note: robin_stocks is unofficial and technically against Robinhood ToS.
+    Use for personal automation only.
+    """
+    from src.portfolio.robinhood_reader import (
+        read_robinhood_holdings, export_robinhood_to_csv,
+        RobinhoodAuthError, RobinhoodReadError,
+    )
+
+    try:
+        holdings = read_robinhood_holdings()
+    except (RobinhoodAuthError, RobinhoodReadError) as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\nRobinhood positions ({len(holdings)}):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    path = export_robinhood_to_csv(holdings, output)
+    click.echo(f"\nPortfolio written to {path}")
+    click.echo("Run the newsletter: financial-bytes run --portfolio " + path)
 
 
 # ── fidelity-import ───────────────────────────────────────────────
@@ -523,6 +598,73 @@ def ticker_report(ticker: str, date: "date | None", skip_scrape: bool, output_di
         if path:
             click.echo(f"  {fmt.upper()}: {path}")
     click.echo(f"{'=' * 50}")
+
+
+# ── stop-loss check ───────────────────────────────────────────────
+@cli.command("check-stops")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV (must have stop_loss_pct column)")
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
+              help="Portfolio name for alert message")
+@click.option("--no-alert", is_flag=True, help="Check only, do not send Discord alert")
+def check_stops(portfolio: str, portfolio_name: str, no_alert: bool) -> None:
+    """Check portfolio positions against stop-loss thresholds and alert via Discord."""
+    from pathlib import Path
+    from src.alerts.stop_loss import run_stop_loss_check
+
+    csv_path = Path(portfolio)
+    if not csv_path.exists():
+        raise click.UsageError(f"Portfolio CSV not found: {csv_path}")
+
+    triggered = run_stop_loss_check(
+        csv_path=csv_path,
+        portfolio_name=portfolio_name,
+        send_alert=not no_alert,
+    )
+
+    if triggered:
+        click.echo(f"\n🔴 {len(triggered)} stop-loss trigger(s):")
+        for t in triggered:
+            click.echo(
+                f"  {t.ticker}: ${float(t.current_price):.2f} "
+                f"(threshold ${float(t.threshold_price):.2f}, "
+                f"loss ${float(t.total_loss):,.0f})"
+            )
+    else:
+        click.echo("✅ No stop-loss triggers — all positions within thresholds")
+
+
+# ── dividend check ────────────────────────────────────────────────
+@cli.command("check-dividends")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+def check_dividends(portfolio: str) -> None:
+    """Show dividend income projections and upcoming ex-dividend dates."""
+    from pathlib import Path
+    from decimal import Decimal
+    import yfinance as yf
+
+    from src.portfolio.reader import read_portfolio
+    from src.portfolio.dividends import fetch_portfolio_dividends, format_dividend_section
+
+    holdings = read_portfolio(portfolio)
+    prices: dict[str, Decimal] = {}
+    for h in holdings:
+        try:
+            hist = yf.Ticker(h.ticker).history(period="2d")
+            if not hist.empty:
+                prices[h.ticker] = Decimal(str(round(hist["Close"].iloc[-1], 4)))
+        except Exception:
+            prices[h.ticker] = h.cost_basis
+
+    dividend_infos = fetch_portfolio_dividends(holdings, prices)
+
+    if not dividend_infos:
+        click.echo("No dividend-paying positions found in portfolio.")
+        return
+
+    section = format_dividend_section(dividend_infos)
+    click.echo(section)
 
 
 # ── audit ─────────────────────────────────────────────────────────
