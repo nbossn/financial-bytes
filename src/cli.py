@@ -1106,5 +1106,66 @@ def show_performance(portfolio_name: str, days: int) -> None:
     click.echo(f"{'═' * 65}\n")
 
 
+# ── earnings-check ────────────────────────────────────────────────
+@cli.command("earnings-check")
+@click.option("--goog", type=float, default=None,
+              help="Google Cloud Revenue in $B (e.g. 18.5)")
+@click.option("--azure", type=float, default=None,
+              help="MSFT Azure growth rate in %% constant currency (e.g. 39.2)")
+@click.option("--aws", type=float, default=None,
+              help="AWS Revenue in $B (e.g. 29.8)")
+@click.option("--guide", is_flag=True, default=False,
+              help="Show where to find each metric (use before earnings land)")
+def earnings_check(goog: float | None, azure: float | None, aws: float | None, guide: bool) -> None:
+    """Map April 29 earnings results to pre-commit portfolio actions.
+
+    Provide one number per company and get exact nbossn + lilich actions.
+
+    \b
+    Where to get the numbers (~5 PM ET on April 29):
+      GOOG  -- Alphabet press release: "Google Cloud" segment revenue
+      MSFT  -- MSFT press release/call: "Azure grew X% in constant currencies"
+      AMZN  -- Amazon press release: "Net Sales by Segment" → AWS row
+
+    \b
+    Examples:
+      financial-bytes earnings-check --guide               # lookup guide before earnings
+      financial-bytes earnings-check --goog 18.5           # GOOG only
+      financial-bytes earnings-check --goog 18.5 --azure 39.2 --aws 29.8
+    """
+    from src.portfolio.earnings_check import (
+        COMPANIES, generate_report, print_lookup_guide,
+    )
+
+    if guide or (goog is None and azure is None and aws is None):
+        print_lookup_guide()
+        if goog is None and azure is None and aws is None:
+            click.echo(
+                "No metrics provided. Run with --goog, --azure, and/or --aws after earnings land.\n"
+                "Example: financial-bytes earnings-check --goog 18.5 --azure 39.2 --aws 29.8\n"
+            )
+            return
+
+    results: dict[str, float] = {}
+    if goog is not None:
+        if goog < 5 or goog > 50:
+            raise click.BadParameter(f"Google Cloud revenue {goog}B looks wrong — expected $10–30B range")
+        results["GOOG"] = goog
+
+    if azure is not None:
+        if azure < 0 or azure > 100:
+            raise click.BadParameter(f"Azure growth rate {azure}% looks wrong — expected 20–60% range")
+        results["MSFT"] = azure
+
+    if aws is not None:
+        if aws < 5 or aws > 100:
+            raise click.BadParameter(f"AWS revenue {aws}B looks wrong — expected $20–50B range")
+        results["AMZN"] = aws
+
+    if results:
+        click.echo()
+        click.echo(generate_report(results))
+
+
 if __name__ == "__main__":
     cli()
