@@ -77,8 +77,8 @@
 {% for lot in tax_summary.lots %}| **{{ lot.ticker }}** | {{ '+' if lot.unrealized_gain >= 0 }}${{ "%.2f"|format(lot.unrealized_gain|float) }} | {{ lot.holding_period_label }} | {% if lot.estimated_tax_high > 0 %}${{ "%.2f"|format(lot.estimated_tax_low|float) }} – ${{ "%.2f"|format(lot.estimated_tax_high|float) }}{% else %}—{% endif %} | {{ lot.tax_rate_label }} |
 {% endfor %}
 
-| | |
-|---|---|
+| Summary | Amount |
+|---------|--------|
 | **Total Unrealized Gains** | ${{ "%.2f"|format(tax_summary.total_unrealized_gain|float) }} |
 | **Total Unrealized Losses** | -${{ "%.2f"|format(tax_summary.total_unrealized_loss|float|abs) }} |
 | **Estimated Tax (if sold today)** | ${{ "%.2f"|format(tax_summary.estimated_tax_low|float) }} – ${{ "%.2f"|format(tax_summary.estimated_tax_high|float) }} |
@@ -108,12 +108,12 @@
 **Recommendation Context:** {{ ar.recommendation_context }}
 
 {% if ar.price_target or ar.analyst_consensus or ar.technical_signal %}
-| | |
-|---|---|
-{% if ar.analyst_consensus %}| Analyst Consensus | {{ ar.analyst_consensus }} |{% endif %}
-{% if ar.price_target %}| Price Target | ${{ "%.2f"|format(ar.price_target) }} |{% endif %}
-{% if ar.technical_signal %}| Technical Signal | {{ ar.technical_signal }} |{% endif %}
-{% endif %}
+| Metric | Value |
+|--------|-------|
+{% if ar.analyst_consensus %}| Analyst Consensus | {{ ar.analyst_consensus }} |
+{% endif %}{% if ar.price_target %}| Price Target | ${{ "%.2f"|format(ar.price_target) }} |
+{% endif %}{% if ar.technical_signal %}| Technical Signal | {{ ar.technical_signal }} |
+{% endif %}{% endif %}
 
 {% if ar.key_catalysts %}
 **Catalysts:**
@@ -123,6 +123,11 @@
 **Risks:**
 {% for r in ar.key_risks %}- {{ r }}
 {% endfor %}{% endif %}
+{% if ar.tax_note %}
+**Tax & Capital Gains ({{ ar.recommendation }}):**
+{{ ar.tax_note }}
+
+{% endif %}
 *Confidence: {{ (ar.confidence * 100) | int }}% · {{ ar.article_count }} article{{ 's' if ar.article_count != 1 }}*
 
 ---

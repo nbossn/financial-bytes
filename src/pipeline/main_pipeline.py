@@ -341,6 +341,21 @@ def run_pipeline(
             f"      {report.ticker}: {report.recommendation} ({report.confidence:.0%} confidence)"
         )
 
+    # ── Attach per-ticker tax notes ────────────────────────────────────────
+    # Computed deterministically from lot data — no LLM call needed.
+    try:
+        from src.portfolio.tax_calculator import generate_tax_note
+        tax_summary = snapshot.tax_summary
+        # Group lots by ticker for O(1) lookup
+        lots_by_ticker: dict[str, list] = {}
+        for lot in tax_summary.lots:
+            lots_by_ticker.setdefault(lot.ticker, []).append(lot)
+        for report in analyst_reports:
+            ticker_lots = lots_by_ticker.get(report.ticker, [])
+            report.tax_note = generate_tax_note(report.ticker, ticker_lots, report.recommendation)
+    except Exception as tax_err:
+        logger.warning(f"Tax note generation failed: {tax_err}")
+
     # ── Phase 5: Director agent ────────────────────────────────────
     logger.info("[5/5] Director synthesis...")
     from src.agents.director_agent import synthesize_portfolio

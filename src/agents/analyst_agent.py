@@ -40,6 +40,7 @@ class AnalystReport(BaseModel):
     technical_signal: str | None = None
     chart_daily_url: str | None = None
     chart_weekly_url: str | None = None
+    tax_note: str | None = None  # generated post-analysis from tax lot data
 
 
 def _format_articles(articles: list[ScrapedArticle]) -> str:

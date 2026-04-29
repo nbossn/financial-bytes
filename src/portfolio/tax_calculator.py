@@ -192,3 +192,152 @@ def compute_tax_summary(snapshot: PortfolioSnapshot) -> PortfolioTaxSummary:
     # Gains first (largest to smallest), then losses
     lots.sort(key=lambda l: l.unrealized_gain, reverse=True)
     return PortfolioTaxSummary(lots=lots)
+
+
+def generate_tax_note(ticker: str, lots: list[TaxLot], recommendation: str) -> str | None:
+    """Generate a plain-English tax implication note for a ticker.
+
+    Combines lot structure (short/long-term, gains/losses) with the analyst
+    recommendation (BUY/HOLD/SELL) to produce actionable 3-5 sentence guidance.
+    Returns None when there is nothing meaningful to say (money market, no data).
+    """
+    if not lots:
+        return None
+
+    rec = recommendation.upper()
+
+    lt_gains = [l for l in lots if l.holding_period == "long_term" and l.unrealized_gain > 0]
+    st_gains = [l for l in lots if l.holding_period == "short_term" and l.unrealized_gain > 0]
+    losses   = [l for l in lots if l.unrealized_gain < 0]
+
+    total_lt_gain  = sum(l.unrealized_gain for l in lt_gains)
+    total_st_gain  = sum(l.unrealized_gain for l in st_gains)
+    total_loss     = sum(l.unrealized_gain for l in losses)
+
+    lt_tax_low  = sum(l.estimated_tax_low  for l in lt_gains)
+    lt_tax_high = sum(l.estimated_tax_high for l in lt_gains)
+    st_tax_low  = sum(l.estimated_tax_low  for l in st_gains)
+    st_tax_high = sum(l.estimated_tax_high for l in st_gains)
+
+    # Savings from waiting for ST → LTCG conversion
+    st_as_ltcg_low  = total_st_gain * LONG_TERM_LOW
+    st_as_ltcg_high = total_st_gain * LONG_TERM_HIGH
+    st_savings_low  = st_tax_low  - st_as_ltcg_high  # conservative
+    st_savings_high = st_tax_high - st_as_ltcg_low   # aggressive
+
+    parts: list[str] = []
+
+    # ── Pure loss position ──────────────────────────────────────────────────
+    if losses and not lt_gains and not st_gains:
+        harvest_amt = abs(float(total_loss))
+        lt_loss = [l for l in losses if l.holding_period == "long_term"]
+        st_loss = [l for l in losses if l.holding_period == "short_term"]
+        parts.append(
+            f"Tax-loss harvesting available — ${harvest_amt:,.0f} in harvestable "
+            f"loss{'es' if len(losses) > 1 else ''} across {len(losses)} lot{'s' if len(losses) > 1 else ''}."
+        )
+        if st_loss and lt_loss:
+            parts.append(
+                "Short-term losses offset ordinary income first (22%–37%); "
+                "long-term losses offset LTCG gains."
+            )
+        if rec == "SELL":
+            parts.append(
+                f"Selling crystallizes the loss and offsets gains elsewhere. "
+                f"IRS wash-sale rule: wait 31 days before repurchasing {ticker}."
+            )
+        else:
+            parts.append(
+                "Holding preserves the loss for a future decision. "
+                "Consider selling if the investment thesis has broken."
+            )
+        return " ".join(parts)
+
+    # ── Position with no actionable data ───────────────────────────────────
+    if not lt_gains and not st_gains:
+        return None
+
+    # ── Short-term exposure ─────────────────────────────────────────────────
+    if st_gains:
+        n_st = len(st_gains)
+        parts.append(
+            f"Short-term exposure: ${float(total_st_gain):,.0f} across {n_st} "
+            f"lot{'s' if n_st > 1 else ''} (22%–37% ordinary income). "
+            f"Do not sell before LTCG conversion — holding saves "
+            f"~${float(st_savings_low):,.0f}–${float(st_savings_high):,.0f}."
+        )
+
+    # ── Long-term gains ─────────────────────────────────────────────────────
+    if lt_gains:
+        n_lt = len(lt_gains)
+        lot_label = f"{n_lt} long-term lot{'s' if n_lt > 1 else ''}"
+        parts.append(
+            f"Long-term gains: ${float(total_lt_gain):,.0f} across {lot_label} "
+            f"(15%–20%, ~${float(lt_tax_low):,.0f}–${float(lt_tax_high):,.0f} tax on full exit)."
+            if n_lt > 1 or st_gains
+            else
+            f"Single long-term lot: +${float(total_lt_gain):,.0f} LTCG "
+            f"(15%–20%, ~${float(lt_tax_low):,.0f}–${float(lt_tax_high):,.0f} tax on full exit)."
+        )
+
+    # ── Harvestable losses alongside gains ──────────────────────────────────
+    if losses:
+        parts.append(
+            f"${abs(float(total_loss)):,.0f} in harvestable losses available — "
+            "selling loss positions offsets gains above."
+        )
+
+    # ── Recommendation-specific action guidance ─────────────────────────────
+    all_tax_low  = lt_tax_low  + st_tax_low
+    all_tax_high = lt_tax_high + st_tax_high
+
+    if rec == "HOLD":
+        if st_gains:
+            parts.append(
+                "HOLD requires no tax action — maintain positions until "
+                "short-term lots convert to LTCG."
+            )
+        elif len(lots) > 1:
+            parts.append(
+                "HOLD requires no tax action. If a partial trim is later needed, "
+                "use specific lot identification and sell highest-basis lots first "
+                "to minimize gain realized."
+            )
+        else:
+            parts.append("HOLD requires no tax action today.")
+
+    elif rec == "SELL":
+        if st_gains and lt_gains:
+            parts.append(
+                f"If exiting: sell LTCG lot{'s' if len(lt_gains) > 1 else ''} first "
+                f"(15%–20% rate); avoid selling short-term lots (22%–37%) unless thesis is broken. "
+                f"Full exit estimated tax: ${float(all_tax_low):,.0f}–${float(all_tax_high):,.0f}."
+            )
+        elif st_gains:
+            parts.append(
+                f"Selling now crystallizes short-term gain at 22%–37% "
+                f"(${float(st_tax_low):,.0f}–${float(st_tax_high):,.0f} tax). "
+                f"If possible, delay until LTCG conversion to save "
+                f"~${float(st_savings_low):,.0f}–${float(st_savings_high):,.0f}."
+            )
+        else:
+            parts.append(
+                f"Exiting at LTCG rates (15%–20%) — estimated "
+                f"${float(lt_tax_low):,.0f}–${float(lt_tax_high):,.0f} tax. "
+                "Tax-efficient exit."
+            )
+
+    elif rec == "BUY":
+        if st_gains:
+            parts.append(
+                "Adding shares starts a new short-term lot alongside existing short-term exposure. "
+                "Use specific lot identification when selling — do not commingle new and existing lots."
+            )
+        else:
+            parts.append(
+                "Adding shares starts a new short-term lot alongside existing LTCG position. "
+                "Track the new purchase date separately — new shares need 12 months before "
+                "they become tax-efficient to exit."
+            )
+
+    return " ".join(parts) if parts else None
