@@ -401,6 +401,13 @@ def run_pipeline(
     else:
         logger.info("Email delivery skipped (--skip-email flag)")
 
+    # ── Performance snapshot ───────────────────────────────────────
+    try:
+        from src.portfolio.performance import track_and_save
+        track_and_save(snapshot, portfolio_name, today)
+    except Exception as e:
+        logger.warning(f"[perf] Snapshot failed (non-fatal): {e}")
+
     elapsed = time.monotonic() - t0
     logger.info(f"Pipeline complete in {elapsed:.1f}s")
     logger.info("=" * 60)

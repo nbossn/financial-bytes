@@ -981,5 +981,130 @@ def audit() -> None:
     run_audit()
 
 
+# ── track-performance ─────────────────────────────────────────────
+@cli.command("track-performance")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
+              help="Portfolio identifier")
+@click.option("--date", "-d", default=None, callback=_parse_date, help="Snapshot date (YYYY-MM-DD, default today)")
+@click.option("--no-save", is_flag=True, help="Compute and display but do not persist to DB")
+def track_performance(portfolio: str, portfolio_name: str, date: "date | None", no_save: bool) -> None:
+    """Take a nightly P&L snapshot and save to the performance time-series.
+
+    Computes total portfolio value, P&L, and SPY YTD benchmark comparison.
+    Runs automatically at the end of the newsletter pipeline; also callable standalone.
+
+    \b
+    Examples:
+      financial-bytes track-performance
+      financial-bytes track-performance --portfolio-name lilich --portfolio lilich.csv
+      financial-bytes track-performance --no-save   # show without storing
+    """
+    from decimal import Decimal
+    import yfinance as yf
+
+    from src.portfolio.reader import read_portfolio
+    from src.portfolio.models import PortfolioSnapshot
+    from src.portfolio.performance import take_snapshot, save_snapshot
+
+    holdings = read_portfolio(portfolio)
+    if not holdings:
+        raise click.UsageError(f"No holdings found in {portfolio}")
+
+    click.echo(f"Fetching live prices for {len(holdings)} positions…")
+    prices: dict[str, Decimal] = {}
+    for h in holdings:
+        try:
+            hist = yf.Ticker(h.ticker).history(period="2d")
+            if not hist.empty:
+                prices[h.ticker] = Decimal(str(round(float(hist["Close"].iloc[-1]), 4)))
+            else:
+                prices[h.ticker] = h.cost_basis
+        except Exception:
+            prices[h.ticker] = h.cost_basis
+
+    snap = PortfolioSnapshot(holdings=holdings, prices=prices, as_of=date or date.__class__.today())
+    record = take_snapshot(snap, portfolio_name, date)
+
+    click.echo(f"\n{'─' * 50}")
+    click.echo(f"  Portfolio    : {portfolio_name}")
+    click.echo(f"  Date         : {record.snapshot_date}")
+    click.echo(f"  Total value  : ${float(record.total_value):>12,.2f}")
+    click.echo(f"  Total cost   : ${float(record.total_cost):>12,.2f}")
+    click.echo(f"  P&L          : ${float(record.total_pnl):>+12,.2f}  ({float(record.total_pnl_pct):+.2f}%)")
+    if record.spy_pnl_pct is not None:
+        click.echo(f"  SPY YTD      : {float(record.spy_pnl_pct):+.2f}%")
+    if record.vs_spy is not None:
+        arrow = "▲" if record.vs_spy >= 0 else "▼"
+        click.echo(f"  vs SPY       : {arrow} {float(record.vs_spy):+.2f}%")
+    click.echo(f"  Positions    : {record.position_count}")
+    click.echo(f"{'─' * 50}")
+
+    if not no_save:
+        saved = save_snapshot(record)
+        if saved:
+            click.echo("✅ Snapshot saved to DB")
+        else:
+            click.echo("⚠️  Snapshot not saved (already exists or error — use --no-save to suppress)")
+    else:
+        click.echo("(--no-save: snapshot not persisted)")
+
+
+# ── show-performance ──────────────────────────────────────────────
+@cli.command("show-performance")
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
+              help="Portfolio identifier")
+@click.option("--days", "-n", default=30, show_default=True, help="Number of days of history to show")
+def show_performance(portfolio_name: str, days: int) -> None:
+    """Show portfolio performance history vs SPY benchmark.
+
+    Displays a time-series table of daily snapshots with P&L and relative
+    performance against SPY YTD return.
+
+    \b
+    Examples:
+      financial-bytes show-performance
+      financial-bytes show-performance --portfolio-name lilich --days 60
+    """
+    from src.portfolio.performance import get_history
+
+    history = get_history(portfolio_name, days=days)
+
+    if not history:
+        click.echo(f"No performance history found for '{portfolio_name}' in the last {days} days.")
+        click.echo("Run `financial-bytes track-performance` to start recording snapshots.")
+        return
+
+    latest = history[-1]
+    click.echo(f"\n{'═' * 65}")
+    click.echo(f"  Performance History — {portfolio_name}  (last {days} days)")
+    click.echo(f"{'═' * 65}")
+    click.echo(f"  {'DATE':<12} {'VALUE':>13} {'P&L':>12} {'P&L %':>8} {'SPY YTD':>9} {'vs SPY':>9}")
+    click.echo(f"  {'─' * 60}")
+
+    for r in history:
+        spy_str = f"{float(r.spy_pnl_pct):+.1f}%" if r.spy_pnl_pct is not None else "   —"
+        vs_str = f"{float(r.vs_spy):+.1f}%" if r.vs_spy is not None else "   —"
+        marker = " ◀" if r.snapshot_date == latest.snapshot_date else ""
+        click.echo(
+            f"  {str(r.snapshot_date):<12} "
+            f"${float(r.total_value):>12,.0f} "
+            f"${float(r.total_pnl):>+11,.0f} "
+            f"{float(r.total_pnl_pct):>+7.1f}% "
+            f"{spy_str:>9} "
+            f"{vs_str:>9}"
+            f"{marker}"
+        )
+
+    click.echo(f"  {'─' * 60}")
+    click.echo(f"  {len(history)} snapshots  |  latest: {latest.snapshot_date}")
+
+    if latest.vs_spy is not None:
+        beat = "beating" if latest.vs_spy >= 0 else "trailing"
+        click.echo(f"  Portfolio is {beat} SPY YTD by {abs(float(latest.vs_spy)):.1f}%")
+    click.echo(f"{'═' * 65}\n")
+
+
 if __name__ == "__main__":
     cli()

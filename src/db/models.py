@@ -143,3 +143,23 @@ class ScrapeLog(Base):
     error_message = Column(Text)
     duration_ms = Column(Integer)
     scraped_at = Column(DateTime, default=_now)
+
+
+class PortfolioPerformanceSnapshot(Base):
+    __tablename__ = "portfolio_performance"
+
+    id = Column(Integer, primary_key=True)
+    portfolio_name = Column(String(100), nullable=False, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    total_cost = Column(Numeric(18, 4), nullable=False)
+    total_value = Column(Numeric(18, 4), nullable=False)
+    total_pnl = Column(Numeric(18, 4), nullable=False)
+    total_pnl_pct = Column(Numeric(10, 4), nullable=False)
+    spy_price = Column(Numeric(15, 4))
+    spy_pnl_pct = Column(Numeric(10, 4))     # hypothetical SPY return on same cost date
+    position_count = Column(Integer)
+    created_at = Column(DateTime, default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_name", "snapshot_date", name="uq_perf_portfolio_date"),
+    )
