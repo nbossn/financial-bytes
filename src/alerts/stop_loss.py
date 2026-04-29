@@ -129,17 +129,192 @@ def _send_discord_alert(checks: list[StopLossCheck], portfolio_name: str) -> Non
         logger.error(f"Discord alert failed: {e}")
 
 
+def _load_all_positions(csv_path: Path) -> list[dict]:
+    """Read all portfolio positions, including those without stop_loss_pct."""
+    positions = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = {c.strip().lower() for c in (reader.fieldnames or [])}
+        has_stop_col = "stop_loss_pct" in fieldnames
+        for row in reader:
+            ticker = row.get("ticker", "").strip().upper()
+            if not ticker:
+                continue
+            try:
+                shares = Decimal(row.get("shares", "0").strip())
+                cost_basis = Decimal(row.get("cost_basis", "0").strip())
+            except Exception:
+                continue
+            static_stop = None
+            if has_stop_col:
+                raw = row.get("stop_loss_pct", "").strip()
+                if raw:
+                    try:
+                        static_stop = Decimal(raw)
+                    except Exception:
+                        pass
+            positions.append({
+                "ticker": ticker,
+                "shares": shares,
+                "cost_basis": cost_basis,
+                "stop_loss_pct": static_stop,
+            })
+    return positions
+
+
+@dataclass
+class DynamicStopCheck:
+    """Stop-loss check result using dynamic volatility-based thresholds."""
+    ticker: str
+    shares: Decimal
+    cost_basis: Decimal
+    current_price: Decimal
+    threshold_pct: Decimal
+    static_pct: Decimal | None
+    mode: str
+    method: str
+    atr_pct: float | None
+    earnings_days: int | None
+    earnings_buffered: bool
+
+    @property
+    def threshold_price(self) -> Decimal:
+        return self.cost_basis * (1 + self.threshold_pct)
+
+    @property
+    def current_pnl_pct(self) -> float:
+        return float((self.current_price - self.cost_basis) / self.cost_basis * 100)
+
+    @property
+    def is_triggered(self) -> bool:
+        return self.current_price <= self.threshold_price
+
+    @property
+    def total_loss(self) -> Decimal:
+        return self.shares * (self.current_price - self.cost_basis)
+
+
+def _send_discord_alert_dynamic(
+    checks: list[DynamicStopCheck], portfolio_name: str, mode: str
+) -> None:
+    """Post dynamic stop-loss alert to Discord webhook."""
+    if not checks:
+        return
+    lines = [f"🔴 **Stop-Loss Alert ({mode}) — {portfolio_name}**\n"]
+    for c in checks:
+        static_note = f" (static: {float(c.static_pct)*100:.0f}%)" if c.static_pct else ""
+        earnings_note = f" ⚠️ earnings in {c.earnings_days}d" if c.earnings_buffered else ""
+        lines.append(
+            f"**{c.ticker}** hit {mode} stop\n"
+            f"  Cost: ${float(c.cost_basis):.2f} | Current: ${float(c.current_price):.2f} "
+            f"({c.current_pnl_pct:.1f}%) | Threshold: {float(c.threshold_pct)*100:.1f}% "
+            f"[{c.method}]{static_note}{earnings_note}\n"
+        )
+    lines.append("\nReview positions — no auto-action taken.")
+    try:
+        resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": "\n".join(lines)}, timeout=10)
+        resp.raise_for_status()
+        logger.info(f"Discord {mode} stop-loss alert sent ({len(checks)} triggers)")
+    except Exception as e:
+        logger.error(f"Discord alert failed: {e}")
+
+
+def _run_dynamic_check(
+    csv_path: Path,
+    portfolio_name: str,
+    send_alert: bool,
+    mode: str,
+    atr_multiplier: float,
+) -> list[DynamicStopCheck]:
+    """Run stop-loss check using dynamic ATR/beta-based thresholds."""
+    from src.alerts.dynamic_stops import compute_dynamic_stop
+
+    positions = _load_all_positions(csv_path)
+    if not positions:
+        logger.info("No positions found")
+        return []
+
+    tickers = [p["ticker"] for p in positions]
+    prices = _fetch_prices(tickers)
+    triggered: list[DynamicStopCheck] = []
+
+    for pos in positions:
+        ticker = pos["ticker"]
+        price = prices.get(ticker)
+        if price is None:
+            logger.warning(f"No price for {ticker} — skipping")
+            continue
+
+        static_stop = pos.get("stop_loss_pct")
+        ds = compute_dynamic_stop(
+            ticker=ticker,
+            static_stop=float(static_stop) if static_stop is not None else None,
+            atr_multiplier=atr_multiplier,
+        )
+
+        threshold_pct = Decimal(str(round(ds.hybrid_pct if mode == "hybrid" else ds.dynamic_pct, 6)))
+
+        check = DynamicStopCheck(
+            ticker=ticker,
+            shares=pos["shares"],
+            cost_basis=pos["cost_basis"],
+            current_price=price,
+            threshold_pct=threshold_pct,
+            static_pct=static_stop,
+            mode=mode,
+            method=ds.method,
+            atr_pct=ds.atr_pct,
+            earnings_days=ds.earnings_days,
+            earnings_buffered=ds.earnings_buffered,
+        )
+
+        earnings_note = f" [earnings in {ds.earnings_days}d buffered]" if ds.earnings_buffered else ""
+        status = "TRIGGERED" if check.is_triggered else "ok"
+        logger.info(
+            f"{ticker}: ${float(price):.2f} | {mode} threshold "
+            f"${float(check.threshold_price):.2f} ({float(threshold_pct)*100:.1f}%, {ds.method})"
+            f"{earnings_note} → {status}"
+        )
+        if check.is_triggered:
+            triggered.append(check)
+
+    if triggered and send_alert:
+        _send_discord_alert_dynamic(triggered, portfolio_name, mode)
+    elif not triggered:
+        logger.info(f"No {mode} stop-loss triggers fired")
+
+    return triggered
+
+
 def run_stop_loss_check(
     csv_path: str | Path,
     portfolio_name: str = "portfolio",
     send_alert: bool = True,
-) -> list[StopLossCheck]:
+    dynamic_mode: str | None = None,
+    atr_multiplier: float = 5.0,
+) -> list[StopLossCheck] | list[DynamicStopCheck]:
     """Run stop-loss check for all configured positions.
 
+    Args:
+        dynamic_mode: None/"static" → use portfolio.csv stop_loss_pct.
+                      "dynamic" → use ATR/beta thresholds, ignore static.
+                      "hybrid"  → tighter of ATR-based and static.
+
     Returns:
-        List of StopLossCheck objects that triggered (may be empty if none breached).
+        List of check objects that triggered (may be empty).
     """
     csv_path = Path(csv_path)
+
+    if dynamic_mode in ("dynamic", "hybrid"):
+        return _run_dynamic_check(
+            csv_path=csv_path,
+            portfolio_name=portfolio_name,
+            send_alert=send_alert,
+            mode=dynamic_mode,
+            atr_multiplier=atr_multiplier,
+        )
+
+    # ── Static mode ──────────────────────────────────────────────────────────
     positions = _load_stop_loss_positions(csv_path)
 
     if not positions:

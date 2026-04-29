@@ -603,12 +603,38 @@ def ticker_report(ticker: str, date: "date | None", skip_scrape: bool, output_di
 # ── stop-loss check ───────────────────────────────────────────────
 @cli.command("check-stops")
 @click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
-              help="Path to portfolio CSV (must have stop_loss_pct column)")
+              help="Path to portfolio CSV")
 @click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
               help="Portfolio name for alert message")
 @click.option("--no-alert", is_flag=True, help="Check only, do not send Discord alert")
-def check_stops(portfolio: str, portfolio_name: str, no_alert: bool) -> None:
-    """Check portfolio positions against stop-loss thresholds and alert via Discord."""
+@click.option(
+    "--mode",
+    type=click.Choice(["static", "dynamic", "hybrid"], case_sensitive=False),
+    default="static",
+    show_default=True,
+    help=(
+        "static: use portfolio.csv stop_loss_pct as-is (default). "
+        "dynamic: use ATR/beta-computed thresholds, ignore static. "
+        "hybrid: use tighter of dynamic and static (most protective)."
+    ),
+)
+@click.option("--atr-multiplier", type=float, default=5.0, show_default=True,
+              help="ATR multiplier for dynamic/hybrid modes (5.0 = 5× ATR14)")
+def check_stops(portfolio: str, portfolio_name: str, no_alert: bool, mode: str, atr_multiplier: float) -> None:
+    """Check portfolio positions against stop-loss thresholds and alert via Discord.
+
+    Three modes:
+
+    \b
+    static  — uses stop_loss_pct from portfolio.csv (original behaviour)
+    dynamic — computes ATR-based thresholds per position; ignores static values
+    hybrid  — fires at whichever threshold is hit first (most protective)
+
+    Dynamic thresholds scale to actual volatility: COIN (6% ATR) gets a wider
+    stop than VOO (1% ATR). An earnings buffer widens any threshold within 7
+    days of the next earnings report to avoid false alerts during pre-earnings
+    volatility.
+    """
     from pathlib import Path
     from src.alerts.stop_loss import run_stop_loss_check
 
@@ -616,22 +642,115 @@ def check_stops(portfolio: str, portfolio_name: str, no_alert: bool) -> None:
     if not csv_path.exists():
         raise click.UsageError(f"Portfolio CSV not found: {csv_path}")
 
-    triggered = run_stop_loss_check(
-        csv_path=csv_path,
-        portfolio_name=portfolio_name,
-        send_alert=not no_alert,
-    )
+    mode = mode.lower()
+    if mode == "static":
+        triggered = run_stop_loss_check(
+            csv_path=csv_path,
+            portfolio_name=portfolio_name,
+            send_alert=not no_alert,
+        )
+    else:
+        triggered = run_stop_loss_check(
+            csv_path=csv_path,
+            portfolio_name=portfolio_name,
+            send_alert=not no_alert,
+            dynamic_mode=mode,
+            atr_multiplier=atr_multiplier,
+        )
 
     if triggered:
-        click.echo(f"\n🔴 {len(triggered)} stop-loss trigger(s):")
+        click.echo(f"\n🔴 {len(triggered)} stop-loss trigger(s) [{mode} mode]:")
         for t in triggered:
-            click.echo(
-                f"  {t.ticker}: ${float(t.current_price):.2f} "
-                f"(threshold ${float(t.threshold_price):.2f}, "
-                f"loss ${float(t.total_loss):,.0f})"
-            )
+            if hasattr(t, "threshold_price_dynamic"):
+                # DynamicStopCheck
+                click.echo(
+                    f"  {t.ticker}: ${t.current_price:.2f} "
+                    f"(threshold ${t.threshold_price:.2f} [{mode}], "
+                    f"pnl {t.current_pnl_pct:.1f}%)"
+                )
+            else:
+                click.echo(
+                    f"  {t.ticker}: ${float(t.current_price):.2f} "
+                    f"(threshold ${float(t.threshold_price):.2f}, "
+                    f"loss ${float(t.total_loss):,.0f})"
+                )
     else:
-        click.echo("✅ No stop-loss triggers — all positions within thresholds")
+        click.echo(f"✅ No stop-loss triggers — all positions within thresholds [{mode} mode]")
+
+
+# ── suggest-stops ─────────────────────────────────────────────────
+@cli.command("suggest-stops")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+@click.option("--atr-multiplier", type=float, default=5.0, show_default=True,
+              help="ATR multiplier (5.0 = 5× ATR14; lower = tighter stops)")
+@click.option("--update-csv", is_flag=True,
+              help="Write recommended dynamic thresholds back to portfolio.csv stop_loss_pct column")
+def suggest_stops(portfolio: str, atr_multiplier: float, update_csv: bool) -> None:
+    """Show volatility-based stop-loss recommendations for all positions.
+
+    Computes ATR-based thresholds (with beta-scaling fallback) and displays a
+    comparison table alongside current static values. Also detects positions
+    within 7 days of earnings and widens their recommendation accordingly.
+
+    Use --update-csv to write the dynamic recommendations into portfolio.csv
+    (replaces stop_loss_pct with the computed dynamic value).
+    """
+    import csv as csv_mod
+    from pathlib import Path
+    from src.alerts.dynamic_stops import suggest_all_stops, format_suggestions_table
+
+    csv_path = Path(portfolio)
+    if not csv_path.exists():
+        raise click.UsageError(f"Portfolio CSV not found: {csv_path}")
+
+    # Read all positions (including those without static stop_loss_pct)
+    positions = []
+    rows = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv_mod.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        for row in reader:
+            ticker = row.get("ticker", "").strip().upper()
+            if not ticker:
+                continue
+            raw_stop = row.get("stop_loss_pct", "").strip()
+            positions.append({
+                "ticker": ticker,
+                "stop_loss_pct": float(raw_stop) if raw_stop else None,
+            })
+            rows.append(dict(row))
+
+    click.echo(f"Computing dynamic stops for {len(positions)} positions (ATR×{atr_multiplier})…\n")
+    stops = suggest_all_stops(positions, atr_multiplier=atr_multiplier)
+
+    table = format_suggestions_table(stops)
+    click.echo(table)
+
+    if update_csv:
+        # Build a lookup by ticker
+        stop_map = {s.ticker: s.dynamic_pct for s in stops}
+
+        # Rewrite portfolio.csv with updated stop_loss_pct
+        has_stop_col = "stop_loss_pct" in fieldnames
+        out_fieldnames = list(fieldnames)
+        if not has_stop_col:
+            out_fieldnames.append("stop_loss_pct")
+
+        updated_rows = []
+        for row in rows:
+            tkr = row.get("ticker", "").strip().upper()
+            if tkr in stop_map:
+                row["stop_loss_pct"] = f"{stop_map[tkr]:.4f}"
+            updated_rows.append(row)
+
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=out_fieldnames)
+            writer.writeheader()
+            writer.writerows(updated_rows)
+
+        click.echo(f"\n✅ Updated stop_loss_pct in {csv_path} ({len(stop_map)} positions)")
+        click.echo("   Review changes before running check-stops — thresholds are now dynamic.")
 
 
 # ── dividend check ────────────────────────────────────────────────
