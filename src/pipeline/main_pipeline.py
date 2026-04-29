@@ -92,6 +92,28 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         logger.warning(f"Portfolio '{portfolio_name}' not found in config, using default CSV")
         return settings.portfolio_csv_path, False
 
+    # ── Plaid (live, preferred when configured) ──────────────────────
+    if pdef.plaid_access_token_env:
+        import os
+        token = os.getenv(pdef.plaid_access_token_env)
+        if token:
+            try:
+                from src.portfolio.plaid_reader import read_plaid_holdings
+                from src.portfolio.transaction_reader import export_holdings_to_csv
+                logger.info(f"[plaid] Loading live holdings for {portfolio_name}...")
+                holdings = read_plaid_holdings(portfolio_name)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
+                ) as tmp:
+                    tmp_path = tmp.name
+                export_holdings_to_csv(holdings, tmp_path)
+                return tmp_path, True
+            except Exception as e:
+                logger.warning(f"[plaid] Failed to fetch live holdings ({e}) — falling through to Fidelity CSV")
+        else:
+            logger.debug(f"[plaid] {pdef.plaid_access_token_env} not set — skipping Plaid")
+
+    # ── Fidelity CSV (static export fallback) ────────────────────────
     if pdef.fidelity_positions:
         from src.portfolio.fidelity_reader import read_fidelity_positions
         from src.portfolio.transaction_reader import export_holdings_to_csv

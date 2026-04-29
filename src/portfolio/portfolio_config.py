@@ -15,6 +15,7 @@ class PortfolioDef:
     fidelity_positions: str | None = None   # Fidelity Portfolio_Positions_*.csv export
     fidelity_account_filter: str | None = None  # Optional: filter by account name substring
     purchase_history: str | None = None     # JSON file with per-lot acquisition dates/costs
+    plaid_access_token_env: str | None = None   # env var name storing Plaid access token
     email_recipients: list[str] = field(default_factory=list)
 
 
@@ -56,6 +57,7 @@ def load_portfolio_defs(config_path: str | Path | None = None) -> list[Portfolio
             fidelity_positions=item.get("fidelity_positions"),
             fidelity_account_filter=item.get("fidelity_account_filter"),
             purchase_history=item.get("purchase_history"),
+            plaid_access_token_env=item.get("plaid_access_token_env"),
             email_recipients=item.get("email_recipients", []),
         ))
 

@@ -786,6 +786,193 @@ def check_dividends(portfolio: str) -> None:
     click.echo(section)
 
 
+# ── plaid-setup ──────────────────────────────────────────────────
+@cli.command("plaid-setup")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name to link (e.g. lilich, nbossn)")
+@click.option("--port", default=8080, show_default=True, help="Local callback port for OAuth flow")
+@click.option("--env-file", default=".env", show_default=True,
+              help="Path to .env file where access token will be stored")
+def plaid_setup(portfolio: str, port: int, env_file: str) -> None:
+    """One-time Plaid OAuth setup — links a Fidelity account to financial-bytes.
+
+    Opens a local web server on localhost:PORT, launches Plaid Link in your browser,
+    exchanges the public token for a permanent access token, and writes it to .env.
+
+    After setup, `financial-bytes plaid-sync --portfolio PORTFOLIO` fetches live holdings.
+    The pipeline auto-uses Plaid when PLAID_ACCESS_TOKEN_<PORTFOLIO> is set in .env.
+
+    \b
+    Prerequisites:
+      PLAID_CLIENT_ID  — from https://dashboard.plaid.com/team/keys
+      PLAID_SECRET     — Development environment secret
+      PLAID_ENV        — "development" for real accounts (default)
+    """
+    import threading
+    import webbrowser
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from urllib.parse import urlparse, parse_qs
+
+    from src.portfolio.plaid_reader import (
+        create_link_token, exchange_public_token, save_access_token_to_env,
+        PlaidConfigError,
+    )
+
+    try:
+        link_token = create_link_token(portfolio)
+    except PlaidConfigError as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\n🔗 Plaid Link setup for portfolio: {portfolio}")
+    click.echo(f"   Local server: http://localhost:{port}")
+    click.echo(f"   Token stored in: {env_file}\n")
+
+    # HTML page that loads Plaid Link and POSTs the public_token back
+    plaid_link_html = f"""<!DOCTYPE html>
+<html>
+<head><title>Plaid Link — financial-bytes</title>
+<style>body{{font-family:sans-serif;max-width:600px;margin:60px auto;text-align:center}}</style>
+</head>
+<body>
+<h2>financial-bytes — Link Fidelity Account</h2>
+<p>Portfolio: <strong>{portfolio}</strong></p>
+<button id="link-btn" style="padding:12px 24px;font-size:16px;cursor:pointer">
+  Connect Fidelity via Plaid
+</button>
+<p id="status"></p>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script>
+const handler = Plaid.create({{
+  token: "{link_token}",
+  onSuccess: function(public_token, metadata) {{
+    document.getElementById("status").textContent = "Exchanging token...";
+    fetch("/callback?public_token=" + encodeURIComponent(public_token))
+      .then(r => r.text())
+      .then(t => document.getElementById("status").textContent = t);
+  }},
+  onExit: function(err, metadata) {{
+    if (err) document.getElementById("status").textContent = "Error: " + err.error_message;
+    else document.getElementById("status").textContent = "Cancelled.";
+  }},
+}});
+document.getElementById("link-btn").onclick = function() {{ handler.open(); }};
+</script>
+</body>
+</html>"""
+
+    result: dict = {}
+    shutdown_event = threading.Event()
+
+    class PlaidCallbackHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass  # silence default HTTP server logs
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/" or parsed.path == "":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(plaid_link_html.encode())
+            elif parsed.path == "/callback":
+                params = parse_qs(parsed.query)
+                public_token = params.get("public_token", [None])[0]
+                if public_token:
+                    try:
+                        access_token = exchange_public_token(public_token)
+                        save_access_token_to_env(portfolio, access_token, env_file)
+                        result["access_token"] = access_token
+                        msg = f"✅ Success! Access token saved. You can close this tab."
+                        click.echo(f"\n✅ Plaid linked — token saved to {env_file}")
+                    except Exception as e:
+                        msg = f"❌ Exchange failed: {e}"
+                        click.echo(f"\n❌ Token exchange failed: {e}", err=True)
+                else:
+                    msg = "❌ No public_token received."
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(msg.encode())
+                shutdown_event.set()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    server = HTTPServer(("localhost", port), PlaidCallbackHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    url = f"http://localhost:{port}"
+    click.echo(f"Opening browser → {url}")
+    click.echo("Complete the Plaid Link flow, then return here.\n")
+    webbrowser.open(url)
+
+    click.echo("Waiting for OAuth callback (Ctrl+C to cancel)…")
+    try:
+        shutdown_event.wait(timeout=300)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+
+    if result.get("access_token"):
+        env_key = f"PLAID_ACCESS_TOKEN_{portfolio.upper()}"
+        click.echo(f"\n✅ Setup complete. {env_key} written to {env_file}")
+        click.echo(f"   Run: financial-bytes plaid-sync --portfolio {portfolio}")
+    else:
+        click.echo("\n⚠️  Setup did not complete — no token received.", err=True)
+
+
+# ── plaid-sync ────────────────────────────────────────────────────
+@cli.command("plaid-sync")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name to sync (must have run plaid-setup first)")
+@click.option("--output", "-o", default=None,
+              help="Write holdings to this CSV file (optional)")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing any files")
+def plaid_sync(portfolio: str, output: str | None, dry_run: bool) -> None:
+    """Fetch live holdings from Plaid (Fidelity) for a portfolio.
+
+    Reads access token from PLAID_ACCESS_TOKEN_<PORTFOLIO> in .env.
+    Cost basis is average basis from Plaid — per-lot detail requires purchase_history JSON.
+
+    \b
+    Run plaid-setup first to obtain an access token.
+    The pipeline uses Plaid automatically when the token is set.
+    """
+    from src.portfolio.plaid_reader import read_plaid_holdings, PlaidConfigError, PlaidSyncError
+    from src.portfolio.transaction_reader import export_holdings_to_csv
+
+    try:
+        holdings = read_plaid_holdings(portfolio)
+    except PlaidConfigError as e:
+        raise click.UsageError(str(e))
+    except PlaidSyncError as e:
+        raise click.UsageError(f"Sync failed: {e}")
+
+    click.echo(f"\nPlaid holdings for {portfolio} ({len(holdings)}):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    if output:
+        export_holdings_to_csv(holdings, output)
+        click.echo(f"\nPortfolio CSV written to {output}")
+        click.echo(f"Run the newsletter: financial-bytes run --portfolio {output} --portfolio-name {portfolio}")
+    else:
+        click.echo(f"\n(No --output specified — holdings not written to CSV)")
+        click.echo(f"Tip: financial-bytes plaid-sync --portfolio {portfolio} --output portfolio-{portfolio}.csv")
+
+
 # ── audit ─────────────────────────────────────────────────────────
 @cli.command()
 def audit() -> None:
