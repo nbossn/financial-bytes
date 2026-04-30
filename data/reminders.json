@@ -1,0 +1,36 @@
+{
+  "reminders": [
+    {
+      "id": "amd-trim-may2",
+      "context": "AMD trim: 5 shares before May 5 earnings. Cooling-off window closes today.",
+      "deadline": "2026-05-02",
+      "remind_hours_before": 24,
+      "created_at": "2026-04-30",
+      "sent": false
+    },
+    {
+      "id": "palantir-tyler-may7",
+      "context": "Tyler Palantir email \u2014 yes/no decision. Non-response noted in behavioral record.",
+      "deadline": "2026-05-07",
+      "remind_hours_before": 24,
+      "created_at": "2026-04-30",
+      "sent": false
+    },
+    {
+      "id": "lilich-amzn-trim-may5",
+      "context": "AMZN trim 512sh (lilich) \u2014 execute this week.",
+      "deadline": "2026-05-05",
+      "remind_hours_before": 24,
+      "created_at": "2026-04-30",
+      "sent": false
+    },
+    {
+      "id": "lilich-msft-trim-may8",
+      "context": "Lilich MSFT trim 150sh \u2014 window open May 1, execute soon.",
+      "deadline": "2026-05-08",
+      "remind_hours_before": 24,
+      "created_at": "2026-04-30",
+      "sent": false
+    }
+  ]
+}

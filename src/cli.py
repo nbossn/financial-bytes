@@ -1276,5 +1276,79 @@ def premarket_check(ticker: tuple[str, ...], prev_close: tuple[float, ...]) -> N
         click.echo()
 
 
+@cli.command("add-reminder")
+@click.option("--context", "-c", required=True,
+              help="Decision context — what this reminder is about")
+@click.option("--deadline", "deadline_str", required=True,
+              help="Deadline date (YYYY-MM-DD)")
+@click.option("--hours-before", default=24, show_default=True,
+              help="How many hours before the deadline to send the alert")
+@click.option("--id", "reminder_id", default=None,
+              help="Optional custom ID for the reminder (auto-generated if omitted)")
+def add_reminder(context: str, deadline_str: str, hours_before: int,
+                 reminder_id: str | None) -> None:
+    """Add a time-gated decision reminder.
+
+    Scheduler sends a Discord alert when the reminder's deadline is within
+    --hours-before hours. Use for portfolio action windows, cooling-off periods,
+    and external deadlines.
+
+    \b
+    Examples:
+      financial-bytes add-reminder --context "AMD trim: 5sh before May 5 earnings" --deadline 2026-05-02
+      financial-bytes add-reminder -c "Tyler Palantir email — yes/no deadline" --deadline 2026-05-07
+      financial-bytes add-reminder -c "AMZN trim 512sh (lilich): execute this week" --deadline 2026-05-05
+    """
+    from datetime import date as _date
+    from src.portfolio.reminders import add_reminder as _add
+
+    try:
+        dl = _date.fromisoformat(deadline_str)
+    except ValueError:
+        raise click.UsageError(f"Invalid date format: {deadline_str!r} — use YYYY-MM-DD")
+
+    if dl < _date.today():
+        raise click.UsageError(f"Deadline {dl} is in the past.")
+
+    rid = _add(context, dl, remind_hours_before=hours_before, reminder_id=reminder_id)
+    click.echo(f"✓ Reminder set: [{rid}]")
+    click.echo(f"  Context:  {context}")
+    click.echo(f"  Deadline: {dl.isoformat()} (alert fires {hours_before}h before)")
+
+
+@cli.command("list-reminders")
+@click.option("--all", "show_all", is_flag=True,
+              help="Include already-sent reminders")
+def list_reminders_cmd(show_all: bool) -> None:
+    """Show pending decision reminders."""
+    from src.portfolio.reminders import list_reminders
+
+    reminders = list_reminders(include_sent=show_all)
+    if not reminders:
+        label = "No reminders" if not show_all else "No reminders (including sent)"
+        click.echo(f"{label}.")
+        return
+
+    click.echo()
+    for r in reminders:
+        sent_marker = " [SENT]" if r.get("sent") else ""
+        click.echo(f"  [{r['id']}]{sent_marker}")
+        click.echo(f"    Context:  {r['context']}")
+        click.echo(f"    Deadline: {r['deadline']}  (alert {r.get('remind_hours_before', 24)}h before)")
+        click.echo()
+
+
+@cli.command("remove-reminder")
+@click.argument("reminder_id")
+def remove_reminder_cmd(reminder_id: str) -> None:
+    """Remove a pending reminder by ID."""
+    from src.portfolio.reminders import remove_reminder
+
+    if remove_reminder(reminder_id):
+        click.echo(f"✓ Reminder {reminder_id!r} removed.")
+    else:
+        click.echo(f"No reminder found with ID {reminder_id!r}.")
+
+
 if __name__ == "__main__":
     cli()

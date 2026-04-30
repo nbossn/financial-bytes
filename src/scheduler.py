@@ -69,6 +69,44 @@ def _run_all_portfolios() -> None:
             logger.exception(f"Pipeline failed for portfolio '{pdef.name}': {e}")
 
 
+def _send_reminder_discord(reminders: list[dict]) -> None:
+    """Post pending decision reminders to Discord webhook."""
+    import os
+    import requests
+
+    webhook_url = os.getenv(
+        "DISCORD_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/1497193787900825711/09tGLG_ZzAhtzrXSl3zJpHCRbxlsWYyFWoaEzAYEpRKoi8FSBP1Y40vazPjfyRDzqMFZ",
+    )
+
+    lines = ["⏰ **Decision reminder(s) due today**"]
+    for r in reminders:
+        lines.append(f"• **Deadline {r['deadline']}:** {r['context']}")
+    lines.append("_Check vault for analysis and action steps._")
+
+    try:
+        resp = requests.post(webhook_url, json={"content": "\n".join(lines)}, timeout=10)
+        resp.raise_for_status()
+        logger.info(f"Reminder Discord alert sent ({len(reminders)} reminder(s))")
+    except Exception as e:
+        logger.warning(f"Reminder Discord alert failed: {e}")
+
+
+def _run_reminder_check() -> None:
+    """Run at 6:00 AM ET — send Discord alert for any reminders due within 24h."""
+    from src.portfolio.reminders import get_due_reminders, mark_sent
+
+    due = get_due_reminders()
+    if not due:
+        logger.info("Reminder check: no reminders due today")
+        return
+
+    logger.info(f"Reminder check: {len(due)} reminder(s) due")
+    _send_reminder_discord(due)
+    for r in due:
+        mark_sent(r["id"])
+
+
 def _send_premarket_discord(results: list) -> None:
     """Post premarket inference results to Discord webhook."""
     import os
@@ -155,6 +193,17 @@ def start_scheduler() -> None:
         ),
         id="daily_pipeline",
         name="Financial Bytes Daily Pipeline",
+        misfire_grace_time=300,
+        coalesce=True,
+    )
+
+    # Decision reminder check — fires at 6:00 AM ET daily
+    # Sends Discord alert for any reminders with deadline within 24h
+    scheduler.add_job(
+        _run_reminder_check,
+        CronTrigger(hour=6, minute=0, timezone="America/New_York"),
+        id="reminder_check",
+        name="Decision Reminder Check",
         misfire_grace_time=300,
         coalesce=True,
     )
