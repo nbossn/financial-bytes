@@ -1006,6 +1006,7 @@ def track_performance(portfolio: str, portfolio_name: str, date: "date | None", 
 
     from src.portfolio.reader import read_portfolio
     from src.portfolio.models import PortfolioSnapshot
+    from datetime import date as _date_cls
     from src.portfolio.performance import take_snapshot, save_snapshot
 
     holdings = read_portfolio(portfolio)
@@ -1024,8 +1025,9 @@ def track_performance(portfolio: str, portfolio_name: str, date: "date | None", 
         except Exception:
             prices[h.ticker] = h.cost_basis
 
-    snap = PortfolioSnapshot(holdings=holdings, prices=prices, as_of=date or date.__class__.today())
-    record = take_snapshot(snap, portfolio_name, date)
+    as_of = date if date is not None else _date_cls.today()
+    snap = PortfolioSnapshot(holdings=holdings, prices=prices, as_of=as_of)
+    record = take_snapshot(snap, portfolio_name, as_of)
 
     click.echo(f"\n{'─' * 50}")
     click.echo(f"  Portfolio    : {portfolio_name}")

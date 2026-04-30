@@ -170,20 +170,20 @@ def get_history(
             .order_by(PortfolioPerformanceSnapshot.snapshot_date.asc())
             .all()
         )
-    return [
-        PerformanceRecord(
-            portfolio_name=r.portfolio_name,
-            snapshot_date=r.snapshot_date,
-            total_cost=r.total_cost,
-            total_value=r.total_value,
-            total_pnl=r.total_pnl,
-            total_pnl_pct=r.total_pnl_pct,
-            spy_price=r.spy_price,
-            spy_pnl_pct=r.spy_pnl_pct,
-            position_count=r.position_count,
-        )
-        for r in rows
-    ]
+        return [
+            PerformanceRecord(
+                portfolio_name=r.portfolio_name,
+                snapshot_date=r.snapshot_date,
+                total_cost=r.total_cost,
+                total_value=r.total_value,
+                total_pnl=r.total_pnl,
+                total_pnl_pct=r.total_pnl_pct,
+                spy_price=r.spy_price,
+                spy_pnl_pct=r.spy_pnl_pct,
+                position_count=r.position_count,
+            )
+            for r in rows
+        ]
 
 
 def format_performance_section(history: list[PerformanceRecord]) -> str:
