@@ -1169,6 +1169,60 @@ def earnings_check(goog: float | None, azure: float | None, aws: float | None, g
         click.echo(generate_report(results))
 
 
+@cli.command("add-earnings-event")
+@click.option("--date", "earnings_date", required=True, callback=_parse_date,
+              help="Earnings date (YYYY-MM-DD)")
+@click.option("--ticker", "-t", required=True, callback=_validate_ticker,
+              help="Ticker symbol")
+@click.option("--time", "timing", default="after-close",
+              type=click.Choice(["pre-market", "after-close"]), show_default=True,
+              help="When earnings are released")
+@click.option("--prev-close", "-p", type=float, default=None,
+              help="Previous close price (auto-fetched if omitted)")
+@click.option("--guide", "-g", default=None,
+              help="Decision guide hint (e.g. 'Services vs. $30B')")
+def add_earnings_event(earnings_date, ticker: str, timing: str,
+                       prev_close: float | None, guide: str | None) -> None:
+    """Add an earnings event to the calendar.
+
+    The daemon will automatically run premarket-check at 7:10 AM ET on the
+    earnings date for pre-market events. After-close events are noted for
+    reference.
+
+    \b
+    Examples:
+      financial-bytes add-earnings-event --date 2026-05-20 --ticker NVDA --time after-close
+      financial-bytes add-earnings-event --date 2026-04-30 --ticker LLY --time pre-market \\
+          --prev-close 851.21 --guide "Mounjaro+Zepbound vs. $9-10B"
+    """
+    from src.portfolio.earnings_calendar import add_earnings_event as _add
+
+    _add(earnings_date, ticker, time=timing, prev_close=prev_close, guide=guide)
+    click.echo(f"✓ Added {ticker.upper()} earnings on {earnings_date.isoformat()} ({timing})")
+
+
+@cli.command("show-earnings-calendar")
+@click.option("--days", default=30, show_default=True,
+              help="Number of days ahead to show")
+def show_earnings_calendar(days: int) -> None:
+    """Show upcoming earnings events from the calendar."""
+    from src.portfolio.earnings_calendar import upcoming_events
+
+    events = upcoming_events(days_ahead=days)
+    if not events:
+        click.echo(f"No earnings events in the next {days} days.")
+        return
+
+    click.echo(f"\nUpcoming earnings (next {days} days):\n")
+    for event_date, entries in events:
+        click.echo(f"  {event_date.strftime('%a %b %d')}:")
+        for entry in entries:
+            guide_str = f" — {entry['guide']}" if entry.get("guide") else ""
+            close_str = f" (prev close: ${entry['prev_close']:.2f})" if entry.get("prev_close") else ""
+            click.echo(f"    {entry['ticker']:6s} {entry['time']:12s}{close_str}{guide_str}")
+        click.echo()
+
+
 @cli.command("premarket-check")
 @click.option("--ticker", "-t", required=True, multiple=True,
               help="Ticker symbol(s) to check (can specify multiple)")

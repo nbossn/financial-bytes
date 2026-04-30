@@ -1,0 +1,36 @@
+{
+  "2026-04-30": [
+    {
+      "ticker": "LLY",
+      "time": "pre-market",
+      "prev_close": 851.21,
+      "guide": "Mounjaro+Zepbound combined vs. $9-10B threshold"
+    },
+    {
+      "ticker": "RDDT",
+      "time": "after-close",
+      "prev_close": 147.82,
+      "guide": "Ad revenue growth vs. 35% hold threshold"
+    },
+    {
+      "ticker": "AAPL",
+      "time": "after-close",
+      "prev_close": 270.17,
+      "guide": "Services revenue vs. $30.4B and iPhone vs. $56.5B"
+    }
+  ],
+  "2026-05-05": [
+    {
+      "ticker": "AMD",
+      "time": "after-close",
+      "guide": "Data Center + AI accelerator mix \u2014 trim 5sh before this if not done"
+    }
+  ],
+  "2026-05-20": [
+    {
+      "ticker": "NVDA",
+      "time": "after-close",
+      "guide": "Data Center revenue vs. $73-75B guidance \u2014 Beat >75B, Severe Miss <58B"
+    }
+  ]
+}
