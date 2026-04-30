@@ -69,6 +69,36 @@ def _run_all_portfolios() -> None:
             logger.exception(f"Pipeline failed for portfolio '{pdef.name}': {e}")
 
 
+def _send_premarket_discord(results: list) -> None:
+    """Post premarket inference results to Discord webhook."""
+    import os
+    import requests
+
+    webhook_url = os.getenv(
+        "DISCORD_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/1497193787900825711/09tGLG_ZzAhtzrXSl3zJpHCRbxlsWYyFWoaEzAYEpRKoi8FSBP1Y40vazPjfyRDzqMFZ",
+    )
+
+    lines = ["📊 **Pre-market earnings check** (7:10 AM ET)"]
+    for result in results:
+        if result.data_available:
+            pct = f"{result.pct_change:+.1%}" if result.pct_change is not None else "N/A"
+            lines.append(
+                f"**{result.ticker}:** ${result.premarket_price:.2f} ({pct}) → {result.inference}"
+            )
+        else:
+            lines.append(f"**{result.ticker}:** {result.inference}")
+
+    lines.append("_Apply guide thresholds — check vault for decision framework._")
+
+    try:
+        resp = requests.post(webhook_url, json={"content": "\n".join(lines)}, timeout=10)
+        resp.raise_for_status()
+        logger.info("Premarket earnings Discord alert sent")
+    except Exception as e:
+        logger.warning(f"Premarket Discord alert failed: {e}")
+
+
 def _run_premarket_earnings_check() -> None:
     """Run at 7:10 AM ET on earnings days — fires premarket_check for pre-market reporters."""
     from src.portfolio.earnings_calendar import get_todays_premarket_events
@@ -101,6 +131,8 @@ def _run_premarket_earnings_check() -> None:
         logger.info(f"Premarket check: {line}")
         if result.data_available and result.detail:
             logger.info(f"  Detail: {result.detail}")
+
+    _send_premarket_discord(results)
 
 
 def start_scheduler() -> None:
