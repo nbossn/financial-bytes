@@ -1169,5 +1169,58 @@ def earnings_check(goog: float | None, azure: float | None, aws: float | None, g
         click.echo(generate_report(results))
 
 
+@cli.command("premarket-check")
+@click.option("--ticker", "-t", required=True, multiple=True,
+              help="Ticker symbol(s) to check (can specify multiple)")
+@click.option("--prev-close", "-p", type=float, multiple=True,
+              help="Previous close price(s) — must match order of --ticker")
+def premarket_check(ticker: tuple[str, ...], prev_close: tuple[float, ...]) -> None:
+    """Infer earnings quality from pre-market price movement.
+
+    Fetches pre-market prices via yfinance and maps the % change vs. prior
+    close to a directional signal (beat / in-line / miss / severe miss).
+
+    Run at 7:10 AM ET on an earnings day to get a signal before the press
+    release is indexed by search engines (~70-80% directional accuracy).
+
+    \b
+    Examples:
+      financial-bytes premarket-check --ticker LLY --prev-close 851.21
+      financial-bytes premarket-check -t RDDT -p 147.82 -t AAPL -p 270.17
+    """
+    from src.portfolio.premarket_check import check_earnings_day
+
+    if not ticker:
+        click.echo("Specify at least one --ticker.")
+        return
+
+    if prev_close and len(prev_close) != len(ticker):
+        raise click.UsageError(
+            f"Got {len(ticker)} tickers but {len(prev_close)} prev-close values — must match."
+        )
+
+    # If prev_close not provided, fetch from yfinance previous_close
+    pairs: list[tuple[str, float]] = []
+    for i, sym in enumerate(ticker):
+        if prev_close and i < len(prev_close):
+            pairs.append((sym.upper(), prev_close[i]))
+        else:
+            import yfinance as yf
+            t_obj = yf.Ticker(sym.upper())
+            pc = getattr(t_obj.fast_info, "previous_close", None)
+            if pc is None:
+                raise click.UsageError(f"Cannot fetch previous close for {sym} — provide --prev-close.")
+            click.echo(f"Using previous close for {sym.upper()}: ${pc:.2f}")
+            pairs.append((sym.upper(), pc))
+
+    click.echo()
+    results = check_earnings_day(pairs)
+    for result in results:
+        click.echo(result.summary_line())
+        if result.data_available:
+            click.echo(f"  Detail: {result.detail}")
+        click.echo()
+
+
 if __name__ == "__main__":
     cli()
