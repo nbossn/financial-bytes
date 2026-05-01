@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     github_repo: str = Field("your-username/financial-bytes", alias="GITHUB_REPO")
 
     # CNBC / Queryly
-    queryly_api_key: str = Field("31a35d40a9a64ab3", alias="QUERYLY_API_KEY")
+    queryly_api_key: str = Field("", alias="QUERYLY_API_KEY")
 
     # Claude agent permissions
     claude_skip_permissions: bool = Field(True, alias="CLAUDE_SKIP_PERMISSIONS")

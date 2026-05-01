@@ -17,6 +17,8 @@ class PortfolioDef:
     purchase_history: str | None = None     # JSON file with per-lot acquisition dates/costs
     plaid_access_token_env: str | None = None   # env var name storing Plaid access token
     email_recipients: list[str] = field(default_factory=list)
+    email_group: str | None = None              # group name: portfolios sharing a group send one combined email
+    max_positions: int | None = None            # if set, keep only top-N positions by cost-basis value (for large accounts)
 
 
 def load_portfolio_defs(config_path: str | Path | None = None) -> list[PortfolioDef]:
@@ -59,6 +61,8 @@ def load_portfolio_defs(config_path: str | Path | None = None) -> list[Portfolio
             purchase_history=item.get("purchase_history"),
             plaid_access_token_env=item.get("plaid_access_token_env"),
             email_recipients=item.get("email_recipients", []),
+            email_group=item.get("email_group"),
+            max_positions=item.get("max_positions"),
         ))
 
     if not defs:

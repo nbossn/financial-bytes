@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from jinja2 import Template
+from jinja2.sandbox import SandboxedEnvironment as _SandboxedEnv
 from loguru import logger
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -139,7 +139,7 @@ def _build_user_prompt(
     global_context: str,
     prior_newsletter_summary: str | None = None,
 ) -> str:
-    template = Template(USER_PROMPT_TEMPLATE)
+    template = _SandboxedEnv().from_string(USER_PROMPT_TEMPLATE)
 
     total_pnl = snapshot.total_pnl
     total_pnl_pct = snapshot.total_pnl_pct

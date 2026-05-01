@@ -178,6 +178,11 @@ def _load_cached_signal(ticker: str) -> "tuple[object, object] | tuple[None, Non
             hours=settings.signal_cache_ttl_hours
         )
         today = date.today()
+
+        # Materialize all column values inside the session to avoid DetachedInstanceError
+        current_price_raw = day_change_pct_raw = rsi_raw = macd_raw = None
+        analyst_rating = None
+        raw: dict = {}
         with get_db() as db:
             row = (
                 db.query(ApiSignal)
@@ -189,10 +194,17 @@ def _load_cached_signal(ticker: str) -> "tuple[object, object] | tuple[None, Non
                 .order_by(ApiSignal.created_at.desc())
                 .first()
             )
-        if row is None:
-            return None, None
+            if row is None:
+                return None, None
+            # Capture all needed values before session closes
+            current_price_raw = row.current_price
+            day_change_pct_raw = row.day_change_pct
+            rsi_raw = row.rsi
+            macd_raw = row.macd
+            analyst_rating = row.analyst_rating
+            raw = dict(row.raw_data) if row.raw_data else {}
 
-        price = Decimal(str(row.current_price)) if row.current_price is not None else None
+        price = Decimal(str(current_price_raw)) if current_price_raw is not None else None
 
         # Reconstruct a minimal TickerSignals from stored columns
         quote = None
@@ -200,25 +212,24 @@ def _load_cached_signal(ticker: str) -> "tuple[object, object] | tuple[None, Non
             quote = QuoteSnapshot(
                 ticker=ticker,
                 current_price=price,
-                day_change_pct=row.day_change_pct,
+                day_change_pct=day_change_pct_raw,
             )
         technicals = None
-        if row.rsi is not None or row.macd is not None:
+        if rsi_raw is not None or macd_raw is not None:
             technicals = TechnicalIndicators(
                 ticker=ticker,
-                rsi=float(row.rsi) if row.rsi is not None else None,
-                macd=float(row.macd) if row.macd is not None else None,
+                rsi=float(rsi_raw) if rsi_raw is not None else None,
+                macd=float(macd_raw) if macd_raw is not None else None,
             )
 
         signals = TickerSignals(
             ticker=ticker,
             quote=quote,
             technicals=technicals,
-            consensus_rating=row.analyst_rating,
+            consensus_rating=analyst_rating,
         )
 
         # Restore raw data fields if available
-        raw = row.raw_data or {}
         if raw:
             from src.api.models import FinvizFundamentals
             fund_data = raw.get("fundamentals")
@@ -420,7 +431,7 @@ def run_pipeline(
     if lot_overrides:
         _apply_purchase_history_to_holdings(holdings, lot_overrides)
     snapshot = PortfolioSnapshot(holdings=holdings, lot_overrides=lot_overrides)
-    logger.info(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
+    logger.debug(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
 
     # Register pipeline run — allows resume detection on subsequent calls
     _upsert_pipeline_run(
@@ -497,11 +508,29 @@ def run_pipeline(
         f"[4/5] Running analyst agents "
         f"(max concurrent: {settings.max_parallel_analysts}, DB-first)..."
     )
-    from src.agents.analyst_agent import run_analysts_parallel
+    from src.agents.analyst_agent import run_analysts_parallel, _load_summary_from_db
+
+    # Pre-filter: skip tickers whose summaries are already cached in DB (fast resume).
+    # On a 345-ticker resume this avoids 345 semaphore-serialized DB trips in asyncio.gather.
+    cached_reports: list = []
+    holdings_to_analyze = holdings
+    if settings.analyst_cache_enabled:
+        holdings_to_analyze = []
+        for h in holdings:
+            cached = _load_summary_from_db(h.ticker, portfolio_name, today)
+            if cached is not None:
+                cached_reports.append(cached)
+            else:
+                holdings_to_analyze.append(h)
+        if cached_reports:
+            logger.info(
+                f"      Resume: {len(cached_reports)}/{len(holdings)} tickers already in DB — "
+                f"analyzing {len(holdings_to_analyze)} remaining"
+            )
 
     analyst_reports = asyncio.run(
         run_analysts_parallel(
-            holdings=holdings,
+            holdings=holdings_to_analyze,
             all_articles=all_articles,
             ticker_signals=ticker_signals,
             report_date=today,
@@ -509,6 +538,10 @@ def run_pipeline(
             portfolio_name=portfolio_name,
         )
     )
+
+    # Combine newly-analyzed + pre-cached reports for tax notes + director phases
+    analyst_reports = analyst_reports + cached_reports
+
     for report in analyst_reports:
         logger.info(
             f"      {report.ticker}: {report.recommendation} ({report.confidence:.0%} confidence)"
@@ -556,7 +589,7 @@ def run_pipeline(
 
     director_report = synthesize_portfolio(
         snapshot,
-        analyst_reports=None,  # always read from DB — avoids passing 300+ objects in-memory
+        analyst_reports=analyst_reports or None,  # in-memory list when available; DB fallback on resume
         report_date=today,
         portfolio_name=portfolio_name,
         prior_newsletter_path=prior_nl_path,

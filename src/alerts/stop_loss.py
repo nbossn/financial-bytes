@@ -25,10 +25,7 @@ import yfinance as yf
 from loguru import logger
 
 
-DISCORD_WEBHOOK_URL = os.getenv(
-    "DISCORD_WEBHOOK_URL",
-    "https://discord.com/api/webhooks/1497193787900825711/09tGLG_ZzAhtzrXSl3zJpHCRbxlsWYyFWoaEzAYEpRKoi8FSBP1Y40vazPjfyRDzqMFZ",
-)
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 
 @dataclass
@@ -102,6 +99,9 @@ def _fetch_prices(tickers: list[str]) -> dict[str, Decimal]:
 def _send_discord_alert(checks: list[StopLossCheck], portfolio_name: str) -> None:
     """Post stop-loss alert to Discord webhook."""
     if not checks:
+        return
+    if not DISCORD_WEBHOOK_URL:
+        logger.warning("DISCORD_WEBHOOK_URL not set — skipping stop-loss Discord alert")
         return
 
     lines = [f"🔴 **Stop-Loss Alert — {portfolio_name}**\n"]

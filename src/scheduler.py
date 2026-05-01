@@ -33,7 +33,6 @@ def _resolve_portfolio_csv(pdef) -> tuple[str | None, str | None]:
             from decimal import Decimal
             top = sorted(holdings, key=lambda h: h.shares * h.cost_basis, reverse=True)
             top = top[: pdef.max_positions]
-            kept = {h.ticker for h in top}
             logger.info(
                 f"  max_positions={pdef.max_positions}: keeping top {len(top)} of "
                 f"{len(holdings)} holdings by value for {pdef.name}"

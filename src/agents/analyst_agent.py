@@ -1,6 +1,7 @@
 """Financial Analyst Agent — per-ticker article analysis using claude-haiku-4-5."""
 import asyncio
 import json
+import random
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -276,7 +277,8 @@ async def _call_claude_async(user_prompt: str) -> str:
                 raise
             is_rate_limit = _is_rate_limit_error(str(e))
             wait = min(2 ** (attempt + 1) * (3 if is_rate_limit else 1), 60)
-            logger.warning(f"claude CLI attempt {attempt + 1} failed ({'rate limit' if is_rate_limit else 'error'}): {e} — retrying in {wait}s")
+            wait = wait * (0.7 + random.random() * 0.6)  # ±30% jitter
+            logger.warning(f"claude CLI attempt {attempt + 1} failed ({'rate limit' if is_rate_limit else 'error'}): {e} — retrying in {wait:.1f}s")
             await asyncio.sleep(wait)
     raise RuntimeError("unreachable")
 
@@ -296,6 +298,25 @@ async def analyze_ticker_async(
     if cached is not None:
         logger.info(f"Analyst cache hit: {holding.ticker} → {cached.recommendation} (from DB)")
         return cached
+
+    # Early-exit: no articles and no signals → emit no-data report without LLM call
+    if len(articles) == 0 and signals is None:
+        logger.info(f"Analyst no-data short-circuit: {holding.ticker} (no articles, no signals)")
+        report = AnalystReport(
+            ticker=holding.ticker,
+            report_date=today,
+            article_count=0,
+            summary="No news articles or market signals available for this position.",
+            sentiment=0.0,
+            sentiment_label="Neutral",
+            recommendation="HOLD",
+            recommendation_context="Insufficient data — maintain current position pending new information.",
+            confidence=0.1,
+            key_catalysts=[],
+            key_risks=["No data available for analysis"],
+        )
+        _save_report(report, portfolio_name=portfolio_name)
+        return report
 
     current_price = signals.quote.current_price if signals and signals.quote else None
     user_prompt = _build_user_prompt(holding, articles, signals, current_price)
