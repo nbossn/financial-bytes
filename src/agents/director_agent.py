@@ -1,10 +1,9 @@
 """Financial Director Agent — portfolio synthesis using claude-sonnet-4-6."""
 import json
+import subprocess
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-
-import subprocess
 
 from jinja2 import Template
 from loguru import logger
@@ -96,9 +95,47 @@ def _extract_prior_newsletter_summary(html_path: Path) -> str | None:
         return None
 
 
+def _load_analyst_summaries_from_db(
+    portfolio_name: str,
+    report_date: "date",
+    tickers: list[str] | None = None,
+) -> list[dict]:
+    """Return compact analyst summary dicts from the summaries table.
+
+    Each dict has: ticker, recommendation, confidence, sentiment, summary,
+    key_catalysts, key_risks, analyst_consensus, price_target, technical_signal.
+    """
+    from src.db.models import Summary
+    from src.db.session import get_db
+
+    with get_db() as db:
+        q = db.query(Summary).filter_by(
+            portfolio_name=portfolio_name,
+            report_date=report_date,
+        )
+        if tickers:
+            q = q.filter(Summary.ticker.in_(tickers))
+        # Build dicts inside the session context to avoid DetachedInstanceError
+        return [
+            {
+                "ticker": r.ticker,
+                "recommendation": r.recommendation or "HOLD",
+                "confidence": float(r.confidence) if r.confidence is not None else 0.5,
+                "sentiment": float(r.sentiment) if r.sentiment is not None else 0.0,
+                "summary": r.summary,
+                "key_catalysts": r.key_catalysts or [],
+                "key_risks": r.key_risks or [],
+                "analyst_consensus": r.analyst_consensus,
+                "price_target": float(r.price_target) if r.price_target is not None else None,
+                "technical_signal": r.technical_signal,
+            }
+            for r in q.all()
+        ]
+
+
 def _build_user_prompt(
     snapshot: PortfolioSnapshot,
-    analyst_reports: list[AnalystReport],
+    analyst_reports: "list[AnalystReport] | list[dict]",
     global_context: str,
     prior_newsletter_summary: str | None = None,
 ) -> str:
@@ -135,26 +172,43 @@ def _is_rate_limit_error(stderr: str) -> bool:
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    """Call the claude CLI, piping the prompt via stdin to avoid OS ARG_MAX limits.
+
+    Large prompts (e.g. 300+ analyst reports) exceed Linux's per-argument size
+    cap when passed as a -p argument. Passing '-p -' and writing to stdin is
+    unbounded and uses the same CLI session auth as analyst agents.
+    """
+    cmd = ["claude", "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
     if settings.claude_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(
+        cmd,
+        input=user_prompt,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     if result.returncode != 0:
         err = result.stderr[:500]
         if _is_rate_limit_error(err):
             raise RuntimeError(f"Rate limit hit: {err}")
-        raise RuntimeError(f"claude CLI error: {err}")
+        raise RuntimeError(f"claude CLI error (rc={result.returncode}): {err}")
     return result.stdout.strip()
 
 
 def synthesize_portfolio(
     snapshot: PortfolioSnapshot,
-    analyst_reports: list[AnalystReport],
+    analyst_reports: list[AnalystReport] | None = None,   # None = read from DB
     report_date: date | None = None,
     portfolio_name: str = "default",
     prior_newsletter_path: Path | None = None,
 ) -> DirectorReport:
-    """Run the director agent to synthesize all analyst reports into a portfolio brief."""
+    """Run the director agent to synthesize all analyst reports into a portfolio brief.
+
+    When analyst_reports is None (or empty), summaries are loaded from the DB for the given
+    portfolio_name/report_date.  This allows the director to run without any in-memory
+    analyst results — critical for the DB-first resumable pipeline.
+    """
     today = report_date or date.today()
     global_context = _get_global_market_context()
 
@@ -164,9 +218,30 @@ def synthesize_portfolio(
         if prior_summary:
             logger.info(f"Director: loaded prior newsletter context from {prior_newsletter_path.name}")
 
-    user_prompt = _build_user_prompt(snapshot, analyst_reports, global_context, prior_summary)
+    # Resolve analyst data: prefer DB when in-memory list is absent/empty
+    reports_for_prompt: list[AnalystReport] | list[dict]
+    if analyst_reports:
+        reports_for_prompt = analyst_reports
+        logger.info(f"Director agent: synthesizing {len(analyst_reports)} analyst reports (in-memory)")
+    else:
+        tickers = [h.ticker for h in snapshot.holdings]
+        db_summaries = _load_analyst_summaries_from_db(portfolio_name, today, tickers)
+        if db_summaries:
+            reports_for_prompt = db_summaries
+            logger.info(
+                f"Director agent: synthesizing {len(db_summaries)} analyst reports "
+                f"(from DB — {portfolio_name}/{today})"
+            )
+        else:
+            # No in-memory reports and no DB summaries — proceed with empty list
+            # (director prompt handles gracefully; signals a cold run with no analyst data)
+            reports_for_prompt = []
+            logger.warning(
+                f"Director agent: no analyst reports available "
+                f"(in-memory or DB) for {portfolio_name}/{today}"
+            )
 
-    logger.info(f"Director agent: synthesizing {len(analyst_reports)} analyst reports")
+    user_prompt = _build_user_prompt(snapshot, reports_for_prompt, global_context, prior_summary)
 
     try:
         raw_json = _call_claude(user_prompt)

@@ -5,8 +5,9 @@ import asyncio
 import os
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from loguru import logger
@@ -158,6 +159,175 @@ def _resolve_recipients(portfolio_name: str, override: list[str] | None) -> list
     return None
 
 
+def _load_cached_signal(ticker: str) -> "tuple[object, object] | tuple[None, None]":
+    """Return (TickerSignals, price) from api_signals if a fresh row exists for today.
+
+    'Fresh' means created within settings.signal_cache_ttl_hours hours.
+    Returns (None, None) if no suitable cached row exists.
+    """
+    from datetime import timedelta
+    from decimal import Decimal
+    from src.db.models import ApiSignal
+    from src.db.session import get_db
+    from src.api.models import (
+        TickerSignals, QuoteSnapshot, TechnicalIndicators,
+    )
+
+    try:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=settings.signal_cache_ttl_hours
+        )
+        today = date.today()
+        with get_db() as db:
+            row = (
+                db.query(ApiSignal)
+                .filter(
+                    ApiSignal.ticker == ticker,
+                    ApiSignal.signal_date == today,
+                    ApiSignal.created_at >= cutoff,
+                )
+                .order_by(ApiSignal.created_at.desc())
+                .first()
+            )
+        if row is None:
+            return None, None
+
+        price = Decimal(str(row.current_price)) if row.current_price is not None else None
+
+        # Reconstruct a minimal TickerSignals from stored columns
+        quote = None
+        if price is not None:
+            quote = QuoteSnapshot(
+                ticker=ticker,
+                current_price=price,
+                day_change_pct=row.day_change_pct,
+            )
+        technicals = None
+        if row.rsi is not None or row.macd is not None:
+            technicals = TechnicalIndicators(
+                ticker=ticker,
+                rsi=float(row.rsi) if row.rsi is not None else None,
+                macd=float(row.macd) if row.macd is not None else None,
+            )
+
+        signals = TickerSignals(
+            ticker=ticker,
+            quote=quote,
+            technicals=technicals,
+            consensus_rating=row.analyst_rating,
+        )
+
+        # Restore raw data fields if available
+        raw = row.raw_data or {}
+        if raw:
+            from src.api.models import FinvizFundamentals
+            fund_data = raw.get("fundamentals")
+            if fund_data and isinstance(fund_data, dict):
+                valid_fields = FinvizFundamentals.model_fields.keys()
+                filtered = {k: v for k, v in fund_data.items() if k in valid_fields}
+                if filtered:
+                    signals.fundamentals = FinvizFundamentals(**filtered)
+            sec_data = raw.get("sec_filings")
+            if sec_data and isinstance(sec_data, list):
+                signals.sec_filings = sec_data
+
+        return signals, price
+    except Exception as e:
+        logger.debug(f"Signal cache lookup failed for {ticker}: {e}")
+        return None, None
+
+
+def _save_signal_to_db(ticker: str, signals: object, price: "Decimal | None") -> None:
+    """Persist api_signals row for the given ticker (upsert by ticker + signal_date)."""
+    from decimal import Decimal
+    from src.db.models import ApiSignal
+    from src.db.session import get_db
+
+    try:
+        today = date.today()
+        raw: dict = {}
+        # Stash fundamentals + SEC filings in raw_data for cache reconstruction
+        if hasattr(signals, "fundamentals") and signals.fundamentals is not None:
+            raw["fundamentals"] = signals.fundamentals.model_dump(exclude_none=True)
+        if hasattr(signals, "sec_filings") and signals.sec_filings:
+            raw["sec_filings"] = signals.sec_filings
+
+        rsi = macd = day_change_pct = analyst_rating = price_target = benzinga_sentiment = None
+        if hasattr(signals, "technicals") and signals.technicals:
+            t = signals.technicals
+            rsi = t.rsi
+            macd = t.macd
+        if hasattr(signals, "quote") and signals.quote:
+            q = signals.quote
+            day_change_pct = float(q.day_change_pct) if q.day_change_pct is not None else None
+        analyst_rating = getattr(signals, "consensus_rating", None)
+
+        with get_db() as db:
+            existing = db.query(ApiSignal).filter_by(
+                ticker=ticker,
+                signal_date=today,
+            ).first()
+            data = dict(
+                current_price=price,
+                day_change_pct=day_change_pct,
+                rsi=rsi,
+                macd=macd,
+                analyst_rating=analyst_rating,
+                price_target=price_target,
+                benzinga_sentiment=benzinga_sentiment,
+                raw_data=raw or None,
+            )
+            if existing:
+                for k, v in data.items():
+                    setattr(existing, k, v)
+            else:
+                db.add(ApiSignal(ticker=ticker, signal_date=today, **data))
+    except Exception as e:
+        logger.debug(f"Failed to save signal to DB for {ticker}: {e}")
+
+
+def _upsert_pipeline_run(
+    run_id: str,
+    portfolio_name: str,
+    report_date: date,
+    status: str = "running",
+    phase: str | None = None,
+    total_tickers: int | None = None,
+    tickers_complete: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Create or update the pipeline_runs row for this portfolio/date."""
+    from src.db.models import PipelineRun
+    from src.db.session import get_db
+
+    try:
+        with get_db() as db:
+            row = db.query(PipelineRun).filter_by(
+                portfolio_name=portfolio_name,
+                report_date=report_date,
+            ).first()
+            if row is None:
+                row = PipelineRun(
+                    run_id=run_id,
+                    portfolio_name=portfolio_name,
+                    report_date=report_date,
+                )
+                db.add(row)
+            row.status = status
+            if phase is not None:
+                row.phase = phase
+            if total_tickers is not None:
+                row.total_tickers = total_tickers
+            if tickers_complete is not None:
+                row.tickers_complete = tickers_complete
+            if error_message is not None:
+                row.error_message = error_message
+            if status in ("complete", "failed"):
+                row.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    except Exception as e:
+        logger.debug(f"PipelineRun upsert failed (non-fatal): {e}")
+
+
 def _fetch_signals_for_ticker(ticker: str):
     """Fetch massive.com signals + Finviz fundamentals in a worker thread."""
     try:
@@ -220,6 +390,7 @@ def run_pipeline(
     out = output_dir or Path("newsletters")
     label = portfolio_label or portfolio_name.replace("_", " ").title()
     t0 = time.monotonic()
+    run_id = str(uuid.uuid4())
 
     logger.info("=" * 60)
     logger.info(f"Financial Bytes pipeline starting — {today} [{portfolio_name}]")
@@ -251,78 +422,80 @@ def run_pipeline(
     snapshot = PortfolioSnapshot(holdings=holdings, lot_overrides=lot_overrides)
     logger.info(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
 
+    # Register pipeline run — allows resume detection on subsequent calls
+    _upsert_pipeline_run(
+        run_id=run_id,
+        portfolio_name=portfolio_name,
+        report_date=today,
+        status="running",
+        phase="portfolio",
+        total_tickers=len(holdings),
+    )
+
     # ── Phase 2: Scrape ────────────────────────────────────────────
+    # scrape_tickers_parallel uses skip_cached=True by default — already DB-first.
+    # Articles scraped today are returned from DB without re-fetching.
     all_articles: dict[str, list] = {}
-    if not skip_scrape:
-        logger.info(
-            f"[2/5] Scraping news articles "
-            f"(parallel workers: {settings.max_parallel_tickers})..."
-        )
-        from src.scrapers.scraper_orchestrator import scrape_tickers_parallel
+    logger.info(
+        f"[2/5] Scraping news articles "
+        f"(parallel workers: {settings.max_parallel_tickers}, DB-cached)..."
+    )
+    from src.scrapers.scraper_orchestrator import scrape_tickers_parallel
 
-        tickers = [h.ticker for h in holdings]
-        all_articles = scrape_tickers_parallel(tickers, max_workers=settings.max_parallel_tickers)
-        for ticker, arts in all_articles.items():
-            logger.info(f"      {ticker}: {len(arts)} article(s)")
-    else:
-        logger.info("[2/5] Scraping skipped (--skip-scrape flag)")
-        from src.db.models import Article
-        from src.db.session import get_db
-        from src.scrapers.base_scraper import ScrapedArticle
-        from datetime import datetime, timedelta, timezone
+    tickers = [h.ticker for h in holdings]
+    all_articles = scrape_tickers_parallel(tickers, max_workers=settings.max_parallel_tickers)
+    for ticker, arts in all_articles.items():
+        logger.info(f"      {ticker}: {len(arts)} article(s)")
+    _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="scrape")
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.article_lookback_hours)
-        with get_db() as db:
-            for holding in holdings:
-                rows = (
-                    db.query(Article)
-                    .filter(
-                        Article.ticker == holding.ticker,
-                        Article.scraped_at >= cutoff,
-                    )
-                    .order_by(Article.published_at.desc())
-                    .limit(settings.max_articles_per_ticker)
-                    .all()
-                )
-                all_articles[holding.ticker] = [
-                    ScrapedArticle(
-                        ticker=r.ticker,
-                        headline=r.headline,
-                        url=r.url,
-                        source=r.source,
-                        body=r.body,
-                        snippet=r.snippet,
-                        published_at=r.published_at,
-                    )
-                    for r in rows
-                ]
-
-    # ── Phase 3: massive.com signals (parallel across tickers) ────
-    logger.info("[3/5] Fetching market signals (parallel across tickers)...")
+    # ── Phase 3: massive.com signals (DB-first, then live fetch) ──
+    logger.info("[3/5] Fetching market signals (DB-first cache, then live)...")
     ticker_signals: dict[str, object] = {}
     market_prices: dict[str, "Decimal"] = {}
 
-    signal_workers = min(len(holdings), 10)
-    with ThreadPoolExecutor(max_workers=signal_workers) as pool:
-        future_map = {
-            pool.submit(_fetch_signals_for_ticker, h.ticker): h.ticker
-            for h in holdings
-        }
-        for future in as_completed(future_map):
-            ticker, signals, price = future.result()
-            if signals is not None:
-                ticker_signals[ticker] = signals
-            if price is not None:
-                market_prices[ticker] = price
-            logger.info(f"      {ticker}: {'signals fetched' if signals else 'signals unavailable'}")
+    # Split into cache hits and misses
+    tickers_need_fetch: list[str] = []
+    for h in holdings:
+        cached_signals, cached_price = _load_cached_signal(h.ticker)
+        if cached_signals is not None:
+            ticker_signals[h.ticker] = cached_signals
+            if cached_price is not None:
+                market_prices[h.ticker] = cached_price
+            logger.info(f"      {h.ticker}: signals from DB cache")
+        else:
+            tickers_need_fetch.append(h.ticker)
+
+    if tickers_need_fetch:
+        logger.info(f"      Live fetch needed for {len(tickers_need_fetch)} ticker(s): {tickers_need_fetch}")
+        signal_workers = min(len(tickers_need_fetch), 10)
+        with ThreadPoolExecutor(max_workers=signal_workers) as pool:
+            future_map = {
+                pool.submit(_fetch_signals_for_ticker, ticker): ticker
+                for ticker in tickers_need_fetch
+            }
+            for future in as_completed(future_map):
+                ticker, signals, price = future.result()
+                if signals is not None:
+                    ticker_signals[ticker] = signals
+                    _save_signal_to_db(ticker, signals, price)
+                if price is not None:
+                    market_prices[ticker] = price
+                logger.info(f"      {ticker}: {'signals fetched' if signals else 'signals unavailable'}")
+    else:
+        logger.info("      All signals served from DB cache")
+
+    _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="signals")
 
     if market_prices:
         snapshot = PortfolioSnapshot(holdings=holdings, prices=market_prices, as_of=today, lot_overrides=lot_overrides)
 
-    # ── Phase 4: Analyst agents (concurrent via asyncio) ──────────
+    # ── Phase 4: Analyst agents (concurrent via asyncio, DB-first) ─
+    # analyze_ticker_async checks the summaries table before calling Claude.
+    # On a resumed run where all 345 summaries are already in DB, this phase
+    # returns immediately without any Claude calls.
     logger.info(
         f"[4/5] Running analyst agents "
-        f"(max concurrent: {settings.max_parallel_analysts})..."
+        f"(max concurrent: {settings.max_parallel_analysts}, DB-first)..."
     )
     from src.agents.analyst_agent import run_analysts_parallel
 
@@ -340,6 +513,13 @@ def run_pipeline(
         logger.info(
             f"      {report.ticker}: {report.recommendation} ({report.confidence:.0%} confidence)"
         )
+    _upsert_pipeline_run(
+        run_id=run_id,
+        portfolio_name=portfolio_name,
+        report_date=today,
+        phase="analysts",
+        tickers_complete=len(analyst_reports),
+    )
 
     # ── Attach per-ticker tax notes ────────────────────────────────────────
     # Computed deterministically from lot data — no LLM call needed.
@@ -375,13 +555,15 @@ def run_pipeline(
         pass
 
     director_report = synthesize_portfolio(
-        snapshot, analyst_reports,
+        snapshot,
+        analyst_reports=None,  # always read from DB — avoids passing 300+ objects in-memory
         report_date=today,
         portfolio_name=portfolio_name,
         prior_newsletter_path=prior_nl_path,
     )
     logger.info(f"      Theme: {director_report.market_theme[:80]}")
     logger.info(f"      Sentiment: {director_report.overall_sentiment:+.2f}")
+    _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="director")
 
     # ── Newsletter generation ──────────────────────────────────────
     logger.info("[6/6] Generating newsletter...")
@@ -424,6 +606,14 @@ def run_pipeline(
         logger.warning(f"[perf] Snapshot failed (non-fatal): {e}")
 
     elapsed = time.monotonic() - t0
+    _upsert_pipeline_run(
+        run_id=run_id,
+        portfolio_name=portfolio_name,
+        report_date=today,
+        status="complete",
+        phase="newsletter",
+        tickers_complete=len(analyst_reports),
+    )
     logger.info(f"Pipeline complete in {elapsed:.1f}s")
     logger.info("=" * 60)
 

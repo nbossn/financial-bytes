@@ -163,3 +163,23 @@ class PortfolioPerformanceSnapshot(Base):
     __table_args__ = (
         UniqueConstraint("portfolio_name", "snapshot_date", name="uq_perf_portfolio_date"),
     )
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String(36), nullable=False, unique=True)  # UUID
+    portfolio_name = Column(String(100), nullable=False, index=True)
+    report_date = Column(Date, nullable=False)
+    status = Column(String(20), nullable=False, default="running")  # running/complete/failed/resumed
+    phase = Column(String(50))  # last completed phase name
+    total_tickers = Column(Integer)
+    tickers_complete = Column(Integer, default=0)
+    started_at = Column(DateTime, default=_now)
+    completed_at = Column(DateTime)
+    error_message = Column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_name", "report_date", name="uq_run_portfolio_date"),
+    )

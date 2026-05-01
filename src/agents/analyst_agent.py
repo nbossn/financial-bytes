@@ -244,19 +244,25 @@ def analyze_ticker(
 
 
 async def _call_claude_async(user_prompt: str) -> str:
-    """Async subprocess wrapper for claude -p with retry."""
+    """Async subprocess wrapper for claude -p, prompting via stdin to avoid ARG_MAX limits."""
     for attempt in range(5):
         try:
-            cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+            cmd = [
+                "claude", "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT,
+            ]
             if settings.claude_skip_permissions:
                 cmd.append("--dangerously-skip-permissions")
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=user_prompt.encode()),
+                    timeout=180,
+                )
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.communicate()
@@ -284,6 +290,13 @@ async def analyze_ticker_async(
 ) -> AnalystReport:
     """Async version of analyze_ticker — use with asyncio.gather for parallel execution."""
     today = report_date or date.today()
+
+    # DB-first: return cached summary if it exists for today
+    cached = _load_summary_from_db(holding.ticker, portfolio_name, today)
+    if cached is not None:
+        logger.info(f"Analyst cache hit: {holding.ticker} → {cached.recommendation} (from DB)")
+        return cached
+
     current_price = signals.quote.current_price if signals and signals.quote else None
     user_prompt = _build_user_prompt(holding, articles, signals, current_price)
 
@@ -348,6 +361,45 @@ async def run_analysts_parallel(
             )
 
     return list(await asyncio.gather(*[_bounded(h) for h in holdings]))
+
+
+def _load_summary_from_db(
+    ticker: str, portfolio_name: str, report_date: date
+) -> AnalystReport | None:
+    """Return a cached AnalystReport reconstructed from the summaries table, or None."""
+    if not settings.analyst_cache_enabled:
+        return None
+    from src.db.models import Summary
+    from src.db.session import get_db
+
+    try:
+        with get_db() as db:
+            row = db.query(Summary).filter_by(
+                ticker=ticker,
+                portfolio_name=portfolio_name,
+                report_date=report_date,
+            ).first()
+            if row is None:
+                return None
+            return AnalystReport(
+                ticker=row.ticker,
+                report_date=row.report_date,
+                article_count=row.article_count or 0,
+                summary=row.summary,
+                sentiment=float(row.sentiment) if row.sentiment is not None else 0.0,
+                sentiment_label="Neutral",  # not stored; derive cheaply from value
+                recommendation=row.recommendation or "HOLD",
+                recommendation_context="",  # not stored in summaries table
+                confidence=float(row.confidence) if row.confidence is not None else 0.5,
+                key_catalysts=row.key_catalysts or [],
+                key_risks=row.key_risks or [],
+                analyst_consensus=row.analyst_consensus,
+                price_target=float(row.price_target) if row.price_target is not None else None,
+                technical_signal=row.technical_signal,
+            )
+    except Exception as e:
+        logger.debug(f"DB summary cache lookup failed for {ticker}: {e}")
+        return None
 
 
 def _save_report(report: AnalystReport, portfolio_name: str = "default") -> None:
