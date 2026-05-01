@@ -19,7 +19,7 @@ OUTPUT_DIR = Path("newsletters")
 def _make_env() -> Environment:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
-        autoescape=select_autoescape(["html", "xml"]),
+        autoescape=select_autoescape(["html", "xml", "j2"]),
     )
 
     def format_number(value) -> str:

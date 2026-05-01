@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     github_repo: str = Field("your-username/financial-bytes", alias="GITHUB_REPO")
 
     # CNBC / Queryly
-    queryly_api_key: str = Field("31a35d40a9a64ab3", alias="QUERYLY_API_KEY")
+    queryly_api_key: str = Field("", alias="QUERYLY_API_KEY")
 
     # Claude agent permissions
     claude_skip_permissions: bool = Field(True, alias="CLAUDE_SKIP_PERMISSIONS")
@@ -49,8 +49,17 @@ class Settings(BaseSettings):
     article_lookback_hours: int = Field(24, alias="ARTICLE_LOOKBACK_HOURS")
 
     # Parallelism
-    max_parallel_tickers: int = Field(3, alias="MAX_PARALLEL_TICKERS")
-    max_parallel_analysts: int = Field(5, alias="MAX_PARALLEL_ANALYSTS")
+    max_parallel_tickers: int = Field(8, alias="MAX_PARALLEL_TICKERS")
+    max_parallel_analysts: int = Field(12, alias="MAX_PARALLEL_ANALYSTS")
+
+    # DB-first pipeline cache
+    signal_cache_ttl_hours: int = Field(1, alias="SIGNAL_CACHE_TTL_HOURS")
+    analyst_cache_enabled: bool = Field(True, alias="ANALYST_CACHE_ENABLED")
+
+    # Robinhood (optional — personal use, ToS risk accepted)
+    robinhood_email: str = Field("", alias="ROBINHOOD_EMAIL")
+    robinhood_password: str = Field("", alias="ROBINHOOD_PASSWORD")
+    robinhood_mfa_secret: str = Field("", alias="ROBINHOOD_MFA_SECRET")
 
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")

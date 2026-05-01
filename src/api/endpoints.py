@@ -30,9 +30,14 @@ class MassiveEndpoints:
     def __init__(self, client: MassiveClient):
         self.client = client
 
-    @_retry_decorator()
     def get_quote(self, ticker: str) -> QuoteSnapshot | None:
-        """Get current quote / snapshot for a ticker."""
+        """
+        Get current quote / snapshot for a ticker.
+
+        Primary: massive.com snapshot endpoint (requires paid plan).
+        Fallback: yfinance (Yahoo Finance, free, 15-min delayed during market hours).
+        """
+        # Try massive.com first
         try:
             data = self.client.get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
             result = data.get("ticker", {})
@@ -53,9 +58,14 @@ class MassiveEndpoints:
                 volume=day.get("v"),
                 as_of=datetime.now(timezone.utc),
             )
-        except (MassiveAPIError, Exception) as e:
-            logger.warning(f"Could not get quote for {ticker}: {e}")
-            return None
+        except MassiveAPIError as e:
+            logger.info(f"[massive.com] Quote unavailable for {ticker} ({e}) — falling back to yfinance")
+        except Exception as e:
+            logger.warning(f"[massive.com] Unexpected error for {ticker}: {e} — falling back to yfinance")
+
+        # Fallback: yfinance (free, EOD/delayed prices)
+        from src.api.yfinance_client import get_quote_yfinance
+        return get_quote_yfinance(ticker)
 
     @_retry_decorator()
     def get_news(self, ticker: str, lookback_hours: int | None = None) -> list[BenzingaArticle]:

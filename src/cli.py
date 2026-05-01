@@ -102,6 +102,38 @@ def run(portfolio, transactions, date, skip_scrape, skip_email, output_dir,
     if transactions and portfolio:
         raise click.UsageError("Specify either --portfolio or --transactions, not both.")
 
+    # Special sentinel: --portfolio robinhood pulls live positions via robin_stocks
+    if portfolio and portfolio.lower() == "robinhood":
+        from src.portfolio.robinhood_reader import read_robinhood_holdings, export_robinhood_to_csv, RobinhoodAuthError, RobinhoodReadError
+        import tempfile, os as _os
+
+        try:
+            rh_holdings = read_robinhood_holdings()
+        except (RobinhoodAuthError, RobinhoodReadError) as e:
+            raise click.UsageError(str(e))
+
+        click.echo(f"Robinhood: {len(rh_holdings)} holdings — {[h.ticker for h in rh_holdings]}")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, prefix="fb_rh_") as tmp:
+            tmp_path = tmp.name
+        try:
+            export_robinhood_to_csv(rh_holdings, tmp_path)
+            from src.pipeline.main_pipeline import run_pipeline
+            result = run_pipeline(
+                portfolio_csv=tmp_path,
+                report_date=date,
+                skip_scrape=skip_scrape,
+                skip_email=skip_email,
+                output_dir=_validate_output_dir(output_dir),
+                portfolio_name=portfolio_name,
+                portfolio_label=portfolio_label,
+                email_recipients=recipients,
+            )
+        finally:
+            _os.unlink(tmp_path)
+        click.echo(f"Done. Status: {result['status']}")
+        return
+
     recipients = list(email_recipients) if email_recipients else None
 
     if transactions:
@@ -185,6 +217,49 @@ def import_transactions(csv_path: str, output: str | None, dry_run: bool) -> Non
     dest = Path(output) if output else Path(settings.portfolio_csv_path)
     export_holdings_to_csv(holdings, dest)
     click.echo(f"\nPortfolio written to {dest}")
+
+
+# ── robinhood-import ─────────────────────────────────────────────
+@cli.command("robinhood-import")
+@click.option("--output", "-o", default="portfolio-robinhood.csv",
+              show_default=True, help="Write derived portfolio CSV to this path")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing any files")
+def robinhood_import(output: str, dry_run: bool) -> None:
+    """Pull live holdings from Robinhood and write a portfolio CSV.
+
+    Uses ROBINHOOD_EMAIL, ROBINHOOD_PASSWORD, ROBINHOOD_MFA_SECRET from .env.
+    Output CSV is compatible with `run --portfolio <file>`.
+
+    Note: robin_stocks is unofficial and technically against Robinhood ToS.
+    Use for personal automation only.
+    """
+    from src.portfolio.robinhood_reader import (
+        read_robinhood_holdings, export_robinhood_to_csv,
+        RobinhoodAuthError, RobinhoodReadError,
+    )
+
+    try:
+        holdings = read_robinhood_holdings()
+    except (RobinhoodAuthError, RobinhoodReadError) as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\nRobinhood positions ({len(holdings)}):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    path = export_robinhood_to_csv(holdings, output)
+    click.echo(f"\nPortfolio written to {path}")
+    click.echo("Run the newsletter: financial-bytes run --portfolio " + path)
 
 
 # ── fidelity-import ───────────────────────────────────────────────
@@ -525,12 +600,754 @@ def ticker_report(ticker: str, date: "date | None", skip_scrape: bool, output_di
     click.echo(f"{'=' * 50}")
 
 
+# ── stop-loss check ───────────────────────────────────────────────
+@cli.command("check-stops")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
+              help="Portfolio name for alert message")
+@click.option("--no-alert", is_flag=True, help="Check only, do not send Discord alert")
+@click.option(
+    "--mode",
+    type=click.Choice(["static", "dynamic", "hybrid"], case_sensitive=False),
+    default="static",
+    show_default=True,
+    help=(
+        "static: use portfolio.csv stop_loss_pct as-is (default). "
+        "dynamic: use ATR/beta-computed thresholds, ignore static. "
+        "hybrid: use tighter of dynamic and static (most protective)."
+    ),
+)
+@click.option("--atr-multiplier", type=float, default=5.0, show_default=True,
+              help="ATR multiplier for dynamic/hybrid modes (5.0 = 5× ATR14)")
+def check_stops(portfolio: str, portfolio_name: str, no_alert: bool, mode: str, atr_multiplier: float) -> None:
+    """Check portfolio positions against stop-loss thresholds and alert via Discord.
+
+    Three modes:
+
+    \b
+    static  — uses stop_loss_pct from portfolio.csv (original behaviour)
+    dynamic — computes ATR-based thresholds per position; ignores static values
+    hybrid  — fires at whichever threshold is hit first (most protective)
+
+    Dynamic thresholds scale to actual volatility: COIN (6% ATR) gets a wider
+    stop than VOO (1% ATR). An earnings buffer widens any threshold within 7
+    days of the next earnings report to avoid false alerts during pre-earnings
+    volatility.
+    """
+    from pathlib import Path
+    from src.alerts.stop_loss import run_stop_loss_check
+
+    csv_path = Path(portfolio)
+    if not csv_path.exists():
+        raise click.UsageError(f"Portfolio CSV not found: {csv_path}")
+
+    mode = mode.lower()
+    if mode == "static":
+        triggered = run_stop_loss_check(
+            csv_path=csv_path,
+            portfolio_name=portfolio_name,
+            send_alert=not no_alert,
+        )
+    else:
+        triggered = run_stop_loss_check(
+            csv_path=csv_path,
+            portfolio_name=portfolio_name,
+            send_alert=not no_alert,
+            dynamic_mode=mode,
+            atr_multiplier=atr_multiplier,
+        )
+
+    if triggered:
+        click.echo(f"\n🔴 {len(triggered)} stop-loss trigger(s) [{mode} mode]:")
+        for t in triggered:
+            if hasattr(t, "threshold_price_dynamic"):
+                # DynamicStopCheck
+                click.echo(
+                    f"  {t.ticker}: ${t.current_price:.2f} "
+                    f"(threshold ${t.threshold_price:.2f} [{mode}], "
+                    f"pnl {t.current_pnl_pct:.1f}%)"
+                )
+            else:
+                click.echo(
+                    f"  {t.ticker}: ${float(t.current_price):.2f} "
+                    f"(threshold ${float(t.threshold_price):.2f}, "
+                    f"loss ${float(t.total_loss):,.0f})"
+                )
+    else:
+        click.echo(f"✅ No stop-loss triggers — all positions within thresholds [{mode} mode]")
+
+
+# ── suggest-stops ─────────────────────────────────────────────────
+@cli.command("suggest-stops")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+@click.option("--atr-multiplier", type=float, default=5.0, show_default=True,
+              help="ATR multiplier (5.0 = 5× ATR14; lower = tighter stops)")
+@click.option("--update-csv", is_flag=True,
+              help="Write recommended dynamic thresholds back to portfolio.csv stop_loss_pct column")
+def suggest_stops(portfolio: str, atr_multiplier: float, update_csv: bool) -> None:
+    """Show volatility-based stop-loss recommendations for all positions.
+
+    Computes ATR-based thresholds (with beta-scaling fallback) and displays a
+    comparison table alongside current static values. Also detects positions
+    within 7 days of earnings and widens their recommendation accordingly.
+
+    Use --update-csv to write the dynamic recommendations into portfolio.csv
+    (replaces stop_loss_pct with the computed dynamic value).
+    """
+    import csv as csv_mod
+    from pathlib import Path
+    from src.alerts.dynamic_stops import suggest_all_stops, format_suggestions_table
+
+    csv_path = Path(portfolio)
+    if not csv_path.exists():
+        raise click.UsageError(f"Portfolio CSV not found: {csv_path}")
+
+    # Read all positions (including those without static stop_loss_pct)
+    positions = []
+    rows = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv_mod.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        for row in reader:
+            ticker = row.get("ticker", "").strip().upper()
+            if not ticker:
+                continue
+            raw_stop = row.get("stop_loss_pct", "").strip()
+            positions.append({
+                "ticker": ticker,
+                "stop_loss_pct": float(raw_stop) if raw_stop else None,
+            })
+            rows.append(dict(row))
+
+    click.echo(f"Computing dynamic stops for {len(positions)} positions (ATR×{atr_multiplier})…\n")
+    stops = suggest_all_stops(positions, atr_multiplier=atr_multiplier)
+
+    table = format_suggestions_table(stops)
+    click.echo(table)
+
+    if update_csv:
+        # Build a lookup by ticker
+        stop_map = {s.ticker: s.dynamic_pct for s in stops}
+
+        # Rewrite portfolio.csv with updated stop_loss_pct
+        has_stop_col = "stop_loss_pct" in fieldnames
+        out_fieldnames = list(fieldnames)
+        if not has_stop_col:
+            out_fieldnames.append("stop_loss_pct")
+
+        updated_rows = []
+        for row in rows:
+            tkr = row.get("ticker", "").strip().upper()
+            if tkr in stop_map:
+                row["stop_loss_pct"] = f"{stop_map[tkr]:.4f}"
+            updated_rows.append(row)
+
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=out_fieldnames)
+            writer.writeheader()
+            writer.writerows(updated_rows)
+
+        click.echo(f"\n✅ Updated stop_loss_pct in {csv_path} ({len(stop_map)} positions)")
+        click.echo("   Review changes before running check-stops — thresholds are now dynamic.")
+
+
+# ── dividend check ────────────────────────────────────────────────
+@cli.command("check-dividends")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+def check_dividends(portfolio: str) -> None:
+    """Show dividend income projections and upcoming ex-dividend dates."""
+    from pathlib import Path
+    from decimal import Decimal
+    import yfinance as yf
+
+    from src.portfolio.reader import read_portfolio
+    from src.portfolio.dividends import fetch_portfolio_dividends, format_dividend_section
+
+    holdings = read_portfolio(portfolio)
+    prices: dict[str, Decimal] = {}
+    for h in holdings:
+        try:
+            hist = yf.Ticker(h.ticker).history(period="2d")
+            if not hist.empty:
+                prices[h.ticker] = Decimal(str(round(hist["Close"].iloc[-1], 4)))
+        except Exception:
+            prices[h.ticker] = h.cost_basis
+
+    dividend_infos = fetch_portfolio_dividends(holdings, prices)
+
+    if not dividend_infos:
+        click.echo("No dividend-paying positions found in portfolio.")
+        return
+
+    section = format_dividend_section(dividend_infos)
+    click.echo(section)
+
+
+# ── plaid-setup ──────────────────────────────────────────────────
+@cli.command("plaid-setup")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name to link (e.g. lilich, nbossn)")
+@click.option("--port", default=8080, show_default=True, help="Local callback port for OAuth flow")
+@click.option("--env-file", default=".env", show_default=True,
+              help="Path to .env file where access token will be stored")
+def plaid_setup(portfolio: str, port: int, env_file: str) -> None:
+    """One-time Plaid OAuth setup — links a Fidelity account to financial-bytes.
+
+    Opens a local web server on localhost:PORT, launches Plaid Link in your browser,
+    exchanges the public token for a permanent access token, and writes it to .env.
+
+    After setup, `financial-bytes plaid-sync --portfolio PORTFOLIO` fetches live holdings.
+    The pipeline auto-uses Plaid when PLAID_ACCESS_TOKEN_<PORTFOLIO> is set in .env.
+
+    \b
+    Prerequisites:
+      PLAID_CLIENT_ID  — from https://dashboard.plaid.com/team/keys
+      PLAID_SECRET     — Development environment secret
+      PLAID_ENV        — "development" for real accounts (default)
+    """
+    import threading
+    import webbrowser
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from urllib.parse import urlparse, parse_qs
+
+    from src.portfolio.plaid_reader import (
+        create_link_token, exchange_public_token, save_access_token_to_env,
+        PlaidConfigError,
+    )
+
+    try:
+        link_token = create_link_token(portfolio)
+    except PlaidConfigError as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\n🔗 Plaid Link setup for portfolio: {portfolio}")
+    click.echo(f"   Local server: http://localhost:{port}")
+    click.echo(f"   Token stored in: {env_file}\n")
+
+    # HTML page that loads Plaid Link and POSTs the public_token back
+    plaid_link_html = f"""<!DOCTYPE html>
+<html>
+<head><title>Plaid Link — financial-bytes</title>
+<style>body{{font-family:sans-serif;max-width:600px;margin:60px auto;text-align:center}}</style>
+</head>
+<body>
+<h2>financial-bytes — Link Fidelity Account</h2>
+<p>Portfolio: <strong>{portfolio}</strong></p>
+<button id="link-btn" style="padding:12px 24px;font-size:16px;cursor:pointer">
+  Connect Fidelity via Plaid
+</button>
+<p id="status"></p>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script>
+const handler = Plaid.create({{
+  token: "{link_token}",
+  onSuccess: function(public_token, metadata) {{
+    document.getElementById("status").textContent = "Exchanging token...";
+    fetch("/callback?public_token=" + encodeURIComponent(public_token))
+      .then(r => r.text())
+      .then(t => document.getElementById("status").textContent = t);
+  }},
+  onExit: function(err, metadata) {{
+    if (err) document.getElementById("status").textContent = "Error: " + err.error_message;
+    else document.getElementById("status").textContent = "Cancelled.";
+  }},
+}});
+document.getElementById("link-btn").onclick = function() {{ handler.open(); }};
+</script>
+</body>
+</html>"""
+
+    result: dict = {}
+    shutdown_event = threading.Event()
+
+    class PlaidCallbackHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass  # silence default HTTP server logs
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/" or parsed.path == "":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(plaid_link_html.encode())
+            elif parsed.path == "/callback":
+                params = parse_qs(parsed.query)
+                public_token = params.get("public_token", [None])[0]
+                if public_token:
+                    try:
+                        access_token = exchange_public_token(public_token)
+                        save_access_token_to_env(portfolio, access_token, env_file)
+                        result["access_token"] = access_token
+                        msg = f"✅ Success! Access token saved. You can close this tab."
+                        click.echo(f"\n✅ Plaid linked — token saved to {env_file}")
+                    except Exception as e:
+                        msg = f"❌ Exchange failed: {e}"
+                        click.echo(f"\n❌ Token exchange failed: {e}", err=True)
+                else:
+                    msg = "❌ No public_token received."
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(msg.encode())
+                shutdown_event.set()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    server = HTTPServer(("localhost", port), PlaidCallbackHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    url = f"http://localhost:{port}"
+    click.echo(f"Opening browser → {url}")
+    click.echo("Complete the Plaid Link flow, then return here.\n")
+    webbrowser.open(url)
+
+    click.echo("Waiting for OAuth callback (Ctrl+C to cancel)…")
+    try:
+        shutdown_event.wait(timeout=300)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+
+    if result.get("access_token"):
+        env_key = f"PLAID_ACCESS_TOKEN_{portfolio.upper()}"
+        click.echo(f"\n✅ Setup complete. {env_key} written to {env_file}")
+        click.echo(f"   Run: financial-bytes plaid-sync --portfolio {portfolio}")
+    else:
+        click.echo("\n⚠️  Setup did not complete — no token received.", err=True)
+
+
+# ── plaid-sync ────────────────────────────────────────────────────
+@cli.command("plaid-sync")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name to sync (must have run plaid-setup first)")
+@click.option("--output", "-o", default=None,
+              help="Write holdings to this CSV file (optional)")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing any files")
+def plaid_sync(portfolio: str, output: str | None, dry_run: bool) -> None:
+    """Fetch live holdings from Plaid (Fidelity) for a portfolio.
+
+    Reads access token from PLAID_ACCESS_TOKEN_<PORTFOLIO> in .env.
+    Cost basis is average basis from Plaid — per-lot detail requires purchase_history JSON.
+
+    \b
+    Run plaid-setup first to obtain an access token.
+    The pipeline uses Plaid automatically when the token is set.
+    """
+    from src.portfolio.plaid_reader import read_plaid_holdings, PlaidConfigError, PlaidSyncError
+    from src.portfolio.transaction_reader import export_holdings_to_csv
+
+    try:
+        holdings = read_plaid_holdings(portfolio)
+    except PlaidConfigError as e:
+        raise click.UsageError(str(e))
+    except PlaidSyncError as e:
+        raise click.UsageError(f"Sync failed: {e}")
+
+    click.echo(f"\nPlaid holdings for {portfolio} ({len(holdings)}):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    if output:
+        export_holdings_to_csv(holdings, output)
+        click.echo(f"\nPortfolio CSV written to {output}")
+        click.echo(f"Run the newsletter: financial-bytes run --portfolio {output} --portfolio-name {portfolio}")
+    else:
+        click.echo(f"\n(No --output specified — holdings not written to CSV)")
+        click.echo(f"Tip: financial-bytes plaid-sync --portfolio {portfolio} --output portfolio-{portfolio}.csv")
+
+
 # ── audit ─────────────────────────────────────────────────────────
 @cli.command()
 def audit() -> None:
     """Run the fullstack agent: DB audit, cost audit, security scan, GitHub sync."""
     from src.agents.fullstack_agent import run_audit
     run_audit()
+
+
+# ── track-performance ─────────────────────────────────────────────
+@cli.command("track-performance")
+@click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
+              help="Path to portfolio CSV")
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
+              help="Portfolio identifier")
+@click.option("--date", "-d", default=None, callback=_parse_date, help="Snapshot date (YYYY-MM-DD, default today)")
+@click.option("--no-save", is_flag=True, help="Compute and display but do not persist to DB")
+def track_performance(portfolio: str, portfolio_name: str, date: "date | None", no_save: bool) -> None:
+    """Take a nightly P&L snapshot and save to the performance time-series.
+
+    Computes total portfolio value, P&L, and SPY YTD benchmark comparison.
+    Runs automatically at the end of the newsletter pipeline; also callable standalone.
+
+    \b
+    Examples:
+      financial-bytes track-performance
+      financial-bytes track-performance --portfolio-name lilich --portfolio lilich.csv
+      financial-bytes track-performance --no-save   # show without storing
+    """
+    from decimal import Decimal
+    import yfinance as yf
+
+    from src.portfolio.reader import read_portfolio
+    from src.portfolio.models import PortfolioSnapshot
+    from datetime import date as _date_cls
+    from src.portfolio.performance import take_snapshot, save_snapshot
+
+    holdings = read_portfolio(portfolio)
+    if not holdings:
+        raise click.UsageError(f"No holdings found in {portfolio}")
+
+    click.echo(f"Fetching live prices for {len(holdings)} positions…")
+    prices: dict[str, Decimal] = {}
+    for h in holdings:
+        try:
+            hist = yf.Ticker(h.ticker).history(period="2d")
+            if not hist.empty:
+                prices[h.ticker] = Decimal(str(round(float(hist["Close"].iloc[-1]), 4)))
+            else:
+                prices[h.ticker] = h.cost_basis
+        except Exception:
+            prices[h.ticker] = h.cost_basis
+
+    as_of = date if date is not None else _date_cls.today()
+    snap = PortfolioSnapshot(holdings=holdings, prices=prices, as_of=as_of)
+    record = take_snapshot(snap, portfolio_name, as_of)
+
+    click.echo(f"\n{'─' * 50}")
+    click.echo(f"  Portfolio    : {portfolio_name}")
+    click.echo(f"  Date         : {record.snapshot_date}")
+    click.echo(f"  Total value  : ${float(record.total_value):>12,.2f}")
+    click.echo(f"  Total cost   : ${float(record.total_cost):>12,.2f}")
+    click.echo(f"  P&L          : ${float(record.total_pnl):>+12,.2f}  ({float(record.total_pnl_pct):+.2f}%)")
+    if record.spy_pnl_pct is not None:
+        click.echo(f"  SPY YTD      : {float(record.spy_pnl_pct):+.2f}%")
+    if record.vs_spy is not None:
+        arrow = "▲" if record.vs_spy >= 0 else "▼"
+        click.echo(f"  vs SPY       : {arrow} {float(record.vs_spy):+.2f}%")
+    click.echo(f"  Positions    : {record.position_count}")
+    click.echo(f"{'─' * 50}")
+
+    if not no_save:
+        saved = save_snapshot(record)
+        if saved:
+            click.echo("✅ Snapshot saved to DB")
+        else:
+            click.echo("⚠️  Snapshot not saved (already exists or error — use --no-save to suppress)")
+    else:
+        click.echo("(--no-save: snapshot not persisted)")
+
+
+# ── show-performance ──────────────────────────────────────────────
+@cli.command("show-performance")
+@click.option("--portfolio-name", default="nbossn", show_default=True, callback=_validate_portfolio_name,
+              help="Portfolio identifier")
+@click.option("--days", "-n", default=30, show_default=True, help="Number of days of history to show")
+def show_performance(portfolio_name: str, days: int) -> None:
+    """Show portfolio performance history vs SPY benchmark.
+
+    Displays a time-series table of daily snapshots with P&L and relative
+    performance against SPY YTD return.
+
+    \b
+    Examples:
+      financial-bytes show-performance
+      financial-bytes show-performance --portfolio-name lilich --days 60
+    """
+    from src.portfolio.performance import get_history
+
+    history = get_history(portfolio_name, days=days)
+
+    if not history:
+        click.echo(f"No performance history found for '{portfolio_name}' in the last {days} days.")
+        click.echo("Run `financial-bytes track-performance` to start recording snapshots.")
+        return
+
+    latest = history[-1]
+    click.echo(f"\n{'═' * 65}")
+    click.echo(f"  Performance History — {portfolio_name}  (last {days} days)")
+    click.echo(f"{'═' * 65}")
+    click.echo(f"  {'DATE':<12} {'VALUE':>13} {'P&L':>12} {'P&L %':>8} {'SPY YTD':>9} {'vs SPY':>9}")
+    click.echo(f"  {'─' * 60}")
+
+    for r in history:
+        spy_str = f"{float(r.spy_pnl_pct):+.1f}%" if r.spy_pnl_pct is not None else "   —"
+        vs_str = f"{float(r.vs_spy):+.1f}%" if r.vs_spy is not None else "   —"
+        marker = " ◀" if r.snapshot_date == latest.snapshot_date else ""
+        click.echo(
+            f"  {str(r.snapshot_date):<12} "
+            f"${float(r.total_value):>12,.0f} "
+            f"${float(r.total_pnl):>+11,.0f} "
+            f"{float(r.total_pnl_pct):>+7.1f}% "
+            f"{spy_str:>9} "
+            f"{vs_str:>9}"
+            f"{marker}"
+        )
+
+    click.echo(f"  {'─' * 60}")
+    click.echo(f"  {len(history)} snapshots  |  latest: {latest.snapshot_date}")
+
+    if latest.vs_spy is not None:
+        beat = "beating" if latest.vs_spy >= 0 else "trailing"
+        click.echo(f"  Portfolio is {beat} SPY YTD by {abs(float(latest.vs_spy)):.1f}%")
+    click.echo(f"{'═' * 65}\n")
+
+
+# ── earnings-check ────────────────────────────────────────────────
+@cli.command("earnings-check")
+@click.option("--goog", type=float, default=None,
+              help="Google Cloud Revenue in $B (e.g. 18.5)")
+@click.option("--azure", type=float, default=None,
+              help="MSFT Azure growth rate in %% constant currency (e.g. 39.2)")
+@click.option("--aws", type=float, default=None,
+              help="AWS Revenue in $B (e.g. 29.8)")
+@click.option("--guide", is_flag=True, default=False,
+              help="Show where to find each metric (use before earnings land)")
+def earnings_check(goog: float | None, azure: float | None, aws: float | None, guide: bool) -> None:
+    """Map April 29 earnings results to pre-commit portfolio actions.
+
+    Provide one number per company and get exact nbossn + lilich actions.
+
+    \b
+    Where to get the numbers (~5 PM ET on April 29):
+      GOOG  -- Alphabet press release: "Google Cloud" segment revenue
+      MSFT  -- MSFT press release/call: "Azure grew X% in constant currencies"
+      AMZN  -- Amazon press release: "Net Sales by Segment" → AWS row
+
+    \b
+    Examples:
+      financial-bytes earnings-check --guide               # lookup guide before earnings
+      financial-bytes earnings-check --goog 18.5           # GOOG only
+      financial-bytes earnings-check --goog 18.5 --azure 39.2 --aws 29.8
+    """
+    from src.portfolio.earnings_check import (
+        COMPANIES, generate_report, print_lookup_guide,
+    )
+
+    if guide or (goog is None and azure is None and aws is None):
+        print_lookup_guide()
+        if goog is None and azure is None and aws is None:
+            click.echo(
+                "No metrics provided. Run with --goog, --azure, and/or --aws after earnings land.\n"
+                "Example: financial-bytes earnings-check --goog 18.5 --azure 39.2 --aws 29.8\n"
+            )
+            return
+
+    results: dict[str, float] = {}
+    if goog is not None:
+        if goog < 5 or goog > 50:
+            raise click.BadParameter(f"Google Cloud revenue {goog}B looks wrong — expected $10–30B range")
+        results["GOOG"] = goog
+
+    if azure is not None:
+        if azure < 0 or azure > 100:
+            raise click.BadParameter(f"Azure growth rate {azure}% looks wrong — expected 20–60% range")
+        results["MSFT"] = azure
+
+    if aws is not None:
+        if aws < 5 or aws > 100:
+            raise click.BadParameter(f"AWS revenue {aws}B looks wrong — expected $20–50B range")
+        results["AMZN"] = aws
+
+    if results:
+        click.echo()
+        click.echo(generate_report(results))
+
+
+@cli.command("add-earnings-event")
+@click.option("--date", "earnings_date", required=True, callback=_parse_date,
+              help="Earnings date (YYYY-MM-DD)")
+@click.option("--ticker", "-t", required=True, callback=_validate_ticker,
+              help="Ticker symbol")
+@click.option("--time", "timing", default="after-close",
+              type=click.Choice(["pre-market", "after-close"]), show_default=True,
+              help="When earnings are released")
+@click.option("--prev-close", "-p", type=float, default=None,
+              help="Previous close price (auto-fetched if omitted)")
+@click.option("--guide", "-g", default=None,
+              help="Decision guide hint (e.g. 'Services vs. $30B')")
+def add_earnings_event(earnings_date, ticker: str, timing: str,
+                       prev_close: float | None, guide: str | None) -> None:
+    """Add an earnings event to the calendar.
+
+    The daemon will automatically run premarket-check at 7:10 AM ET on the
+    earnings date for pre-market events. After-close events are noted for
+    reference.
+
+    \b
+    Examples:
+      financial-bytes add-earnings-event --date 2026-05-20 --ticker NVDA --time after-close
+      financial-bytes add-earnings-event --date 2026-04-30 --ticker LLY --time pre-market \\
+          --prev-close 851.21 --guide "Mounjaro+Zepbound vs. $9-10B"
+    """
+    from src.portfolio.earnings_calendar import add_earnings_event as _add
+
+    _add(earnings_date, ticker, time=timing, prev_close=prev_close, guide=guide)
+    click.echo(f"✓ Added {ticker.upper()} earnings on {earnings_date.isoformat()} ({timing})")
+
+
+@cli.command("show-earnings-calendar")
+@click.option("--days", default=30, show_default=True,
+              help="Number of days ahead to show")
+def show_earnings_calendar(days: int) -> None:
+    """Show upcoming earnings events from the calendar."""
+    from src.portfolio.earnings_calendar import upcoming_events
+
+    events = upcoming_events(days_ahead=days)
+    if not events:
+        click.echo(f"No earnings events in the next {days} days.")
+        return
+
+    click.echo(f"\nUpcoming earnings (next {days} days):\n")
+    for event_date, entries in events:
+        click.echo(f"  {event_date.strftime('%a %b %d')}:")
+        for entry in entries:
+            guide_str = f" — {entry['guide']}" if entry.get("guide") else ""
+            close_str = f" (prev close: ${entry['prev_close']:.2f})" if entry.get("prev_close") else ""
+            click.echo(f"    {entry['ticker']:6s} {entry['time']:12s}{close_str}{guide_str}")
+        click.echo()
+
+
+@cli.command("premarket-check")
+@click.option("--ticker", "-t", required=True, multiple=True,
+              help="Ticker symbol(s) to check (can specify multiple)")
+@click.option("--prev-close", "-p", type=float, multiple=True,
+              help="Previous close price(s) — must match order of --ticker")
+def premarket_check(ticker: tuple[str, ...], prev_close: tuple[float, ...]) -> None:
+    """Infer earnings quality from pre-market price movement.
+
+    Fetches pre-market prices via yfinance and maps the % change vs. prior
+    close to a directional signal (beat / in-line / miss / severe miss).
+
+    Run at 7:10 AM ET on an earnings day to get a signal before the press
+    release is indexed by search engines (~70-80% directional accuracy).
+
+    \b
+    Examples:
+      financial-bytes premarket-check --ticker LLY --prev-close 851.21
+      financial-bytes premarket-check -t RDDT -p 147.82 -t AAPL -p 270.17
+    """
+    from src.portfolio.premarket_check import check_earnings_day
+
+    if not ticker:
+        click.echo("Specify at least one --ticker.")
+        return
+
+    if prev_close and len(prev_close) != len(ticker):
+        raise click.UsageError(
+            f"Got {len(ticker)} tickers but {len(prev_close)} prev-close values — must match."
+        )
+
+    # If prev_close not provided, fetch from yfinance previous_close
+    pairs: list[tuple[str, float]] = []
+    for i, sym in enumerate(ticker):
+        if prev_close and i < len(prev_close):
+            pairs.append((sym.upper(), prev_close[i]))
+        else:
+            import yfinance as yf
+            t_obj = yf.Ticker(sym.upper())
+            pc = getattr(t_obj.fast_info, "previous_close", None)
+            if pc is None:
+                raise click.UsageError(f"Cannot fetch previous close for {sym} — provide --prev-close.")
+            click.echo(f"Using previous close for {sym.upper()}: ${pc:.2f}")
+            pairs.append((sym.upper(), pc))
+
+    click.echo()
+    results = check_earnings_day(pairs)
+    for result in results:
+        click.echo(result.summary_line())
+        if result.data_available:
+            click.echo(f"  Detail: {result.detail}")
+        click.echo()
+
+
+@cli.command("add-reminder")
+@click.option("--context", "-c", required=True,
+              help="Decision context — what this reminder is about")
+@click.option("--deadline", "deadline_str", required=True,
+              help="Deadline date (YYYY-MM-DD)")
+@click.option("--hours-before", default=24, show_default=True,
+              help="How many hours before the deadline to send the alert")
+@click.option("--id", "reminder_id", default=None,
+              help="Optional custom ID for the reminder (auto-generated if omitted)")
+def add_reminder(context: str, deadline_str: str, hours_before: int,
+                 reminder_id: str | None) -> None:
+    """Add a time-gated decision reminder.
+
+    Scheduler sends a Discord alert when the reminder's deadline is within
+    --hours-before hours. Use for portfolio action windows, cooling-off periods,
+    and external deadlines.
+
+    \b
+    Examples:
+      financial-bytes add-reminder --context "AMD trim: 5sh before May 5 earnings" --deadline 2026-05-02
+      financial-bytes add-reminder -c "Tyler Palantir email — yes/no deadline" --deadline 2026-05-07
+      financial-bytes add-reminder -c "AMZN trim 512sh (lilich): execute this week" --deadline 2026-05-05
+    """
+    from datetime import date as _date
+    from src.portfolio.reminders import add_reminder as _add
+
+    try:
+        dl = _date.fromisoformat(deadline_str)
+    except ValueError:
+        raise click.UsageError(f"Invalid date format: {deadline_str!r} — use YYYY-MM-DD")
+
+    if dl < _date.today():
+        raise click.UsageError(f"Deadline {dl} is in the past.")
+
+    rid = _add(context, dl, remind_hours_before=hours_before, reminder_id=reminder_id)
+    click.echo(f"✓ Reminder set: [{rid}]")
+    click.echo(f"  Context:  {context}")
+    click.echo(f"  Deadline: {dl.isoformat()} (alert fires {hours_before}h before)")
+
+
+@cli.command("list-reminders")
+@click.option("--all", "show_all", is_flag=True,
+              help="Include already-sent reminders")
+def list_reminders_cmd(show_all: bool) -> None:
+    """Show pending decision reminders."""
+    from src.portfolio.reminders import list_reminders
+
+    reminders = list_reminders(include_sent=show_all)
+    if not reminders:
+        label = "No reminders" if not show_all else "No reminders (including sent)"
+        click.echo(f"{label}.")
+        return
+
+    click.echo()
+    for r in reminders:
+        sent_marker = " [SENT]" if r.get("sent") else ""
+        click.echo(f"  [{r['id']}]{sent_marker}")
+        click.echo(f"    Context:  {r['context']}")
+        click.echo(f"    Deadline: {r['deadline']}  (alert {r.get('remind_hours_before', 24)}h before)")
+        click.echo()
+
+
+@cli.command("remove-reminder")
+@click.argument("reminder_id")
+def remove_reminder_cmd(reminder_id: str) -> None:
+    """Remove a pending reminder by ID."""
+    from src.portfolio.reminders import remove_reminder
+
+    if remove_reminder(reminder_id):
+        click.echo(f"✓ Reminder {reminder_id!r} removed.")
+    else:
+        click.echo(f"No reminder found with ID {reminder_id!r}.")
 
 
 if __name__ == "__main__":

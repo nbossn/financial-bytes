@@ -31,8 +31,8 @@ def _send_via_smtp(msg: MIMEMultipart) -> None:
 def _build_subject(report_date: date, market_theme: str | None) -> str:
     date_str = report_date.strftime("%b %d")
     if market_theme:
-        # Truncate theme to keep subject short
-        theme = market_theme[:60] + "…" if len(market_theme) > 60 else market_theme
+        theme = market_theme.replace("\r", "").replace("\n", " ")
+        theme = theme[:60] + "…" if len(theme) > 60 else theme
         return f"Financial Bytes ({date_str}) — {theme}"
     return f"Financial Bytes — Daily Portfolio Brief ({date_str})"
 
@@ -100,7 +100,7 @@ def send_newsletter(
         outer.attach(attachment)
         msg = outer  # type: ignore[assignment]
 
-    logger.info(f"Sending newsletter to {to_list} — '{subject}'")
+    logger.info(f"Sending newsletter to {len(to_list)} recipient(s) — '{subject}'")
 
     try:
         _send_via_smtp(msg)
