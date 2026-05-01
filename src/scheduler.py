@@ -128,10 +128,18 @@ def _send_group_email(group_name: str, runs: list[tuple]) -> None:
             combined_bodies.append(DIVIDER.format(label=label))
         combined_bodies.append(_body(html))
 
+    first_html = html_parts[0][1]
+    if "<body" not in first_html.lower():
+        logger.error(
+            f"Group '{group_name}': first portfolio HTML has no <body> tag — "
+            "cannot build combined email; aborting group send"
+        )
+        return
     combined_html = re.sub(
         r"<body[^>]*>.*?</body>",
         "<body>\n" + "\n".join(combined_bodies) + "\n</body>",
-        html_parts[0][1],
+        first_html,
+        count=1,
         flags=re.DOTALL | re.IGNORECASE,
     )
     combined_md = "\n\n---\n\n".join(md_parts)
@@ -152,6 +160,7 @@ def _send_group_email(group_name: str, runs: list[tuple]) -> None:
 
 def _run_all_portfolios() -> None:
     import os
+    from datetime import date
     from src.pipeline.main_pipeline import run_pipeline
     from src.portfolio.portfolio_config import load_portfolio_defs
 
@@ -186,6 +195,11 @@ def _run_all_portfolios() -> None:
 
         except Exception as e:
             logger.exception(f"Pipeline failed for portfolio '{pdef.name}': {e}")
+            try:
+                from src.pipeline.main_pipeline import mark_pipeline_run_failed
+                mark_pipeline_run_failed(pdef.name, date.today(), str(e))
+            except Exception:
+                pass
 
     # Send one combined email per group
     for group_name, runs in group_runs.items():

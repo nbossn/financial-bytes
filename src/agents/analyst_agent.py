@@ -179,10 +179,10 @@ def _is_rate_limit_error(stderr: str) -> bool:
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    cmd = ["claude", "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
     if settings.claude_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(cmd, input=user_prompt, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         err = result.stderr[:500]
         if _is_rate_limit_error(err):

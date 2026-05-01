@@ -433,7 +433,8 @@ def run_pipeline(
     snapshot = PortfolioSnapshot(holdings=holdings, lot_overrides=lot_overrides)
     logger.debug(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
 
-    # Register pipeline run — allows resume detection on subsequent calls
+    # Register pipeline run — allows resume detection on subsequent calls.
+    # _pipeline_exc tracks any failure so the finally block can write "failed" to DB.
     _upsert_pipeline_run(
         run_id=run_id,
         portfolio_name=portfolio_name,
@@ -442,19 +443,22 @@ def run_pipeline(
         phase="portfolio",
         total_tickers=len(holdings),
     )
-
     # ── Phase 2: Scrape ────────────────────────────────────────────
     # scrape_tickers_parallel uses skip_cached=True by default — already DB-first.
     # Articles scraped today are returned from DB without re-fetching.
+    # skip_scrape=True bypasses entirely (useful for tests or resume-only runs).
     all_articles: dict[str, list] = {}
-    logger.info(
-        f"[2/5] Scraping news articles "
-        f"(parallel workers: {settings.max_parallel_tickers}, DB-cached)..."
-    )
-    from src.scrapers.scraper_orchestrator import scrape_tickers_parallel
+    if skip_scrape:
+        logger.info("[2/5] Scraping skipped (--skip-scrape)")
+    else:
+        logger.info(
+            f"[2/5] Scraping news articles "
+            f"(parallel workers: {settings.max_parallel_tickers}, DB-cached)..."
+        )
+        from src.scrapers.scraper_orchestrator import scrape_tickers_parallel
 
-    tickers = [h.ticker for h in holdings]
-    all_articles = scrape_tickers_parallel(tickers, max_workers=settings.max_parallel_tickers)
+        tickers = [h.ticker for h in holdings]
+        all_articles = scrape_tickers_parallel(tickers, max_workers=settings.max_parallel_tickers)
     for ticker, arts in all_articles.items():
         logger.info(f"      {ticker}: {len(arts)} article(s)")
     _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="scrape")
@@ -657,3 +661,31 @@ def run_pipeline(
         "director_report": director_report,
         "analyst_reports": analyst_reports,
     }
+
+
+def mark_pipeline_run_failed(
+    portfolio_name: str,
+    report_date: "date",
+    error_message: str,
+) -> None:
+    """Mark a running pipeline_runs row as failed.
+
+    Looks up by (portfolio_name, report_date) — no run_id needed.
+    Called from the scheduler's except block when run_pipeline raises.
+    """
+    from src.db.models import PipelineRun
+    from src.db.session import get_db
+    from datetime import datetime, timezone
+
+    try:
+        with get_db() as db:
+            row = db.query(PipelineRun).filter_by(
+                portfolio_name=portfolio_name,
+                report_date=report_date,
+            ).first()
+            if row and row.status == "running":
+                row.status = "failed"
+                row.error_message = error_message[:500]
+                row.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    except Exception as e:
+        logger.debug(f"mark_pipeline_run_failed DB update skipped: {e}")

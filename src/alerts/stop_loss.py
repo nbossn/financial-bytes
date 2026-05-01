@@ -200,6 +200,9 @@ def _send_discord_alert_dynamic(
     """Post dynamic stop-loss alert to Discord webhook."""
     if not checks:
         return
+    if not DISCORD_WEBHOOK_URL:
+        logger.warning("DISCORD_WEBHOOK_URL not set — skipping dynamic stop-loss Discord alert")
+        return
     lines = [f"🔴 **Stop-Loss Alert ({mode}) — {portfolio_name}**\n"]
     for c in checks:
         static_note = f" (static: {float(c.static_pct)*100:.0f}%)" if c.static_pct else ""
