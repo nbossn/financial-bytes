@@ -9,14 +9,6 @@
       "sent": false
     },
     {
-      "id": "palantir-tyler-may7",
-      "context": "Tyler Palantir email \u2014 yes/no decision. Non-response noted in behavioral record.",
-      "deadline": "2026-05-07",
-      "remind_hours_before": 24,
-      "created_at": "2026-04-30",
-      "sent": false
-    },
-    {
       "id": "lilich-amzn-trim-may5",
       "context": "AMZN trim 512sh (lilich) \u2014 execute this week.",
       "deadline": "2026-05-05",
@@ -28,6 +20,14 @@
       "id": "lilich-msft-trim-may8",
       "context": "Lilich MSFT trim 150sh \u2014 window open May 1, execute soon.",
       "deadline": "2026-05-08",
+      "remind_hours_before": 24,
+      "created_at": "2026-04-30",
+      "sent": false
+    },
+    {
+      "id": "palantir-portal-may7",
+      "context": "Palantir FDE portal application \u2014 yes/no decision. Tyler contact stale. Portal: jobs.lever.co/palantir (FDSE commercial NY). Non-action noted in behavioral record after May 7.",
+      "deadline": "2026-05-07",
       "remind_hours_before": 24,
       "created_at": "2026-04-30",
       "sent": false
