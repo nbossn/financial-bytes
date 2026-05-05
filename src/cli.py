@@ -923,6 +923,93 @@ document.getElementById("link-btn").onclick = function() {{ handler.open(); }};
         click.echo("\n⚠️  Setup did not complete — no token received.", err=True)
 
 
+# ── fidelity-sync ─────────────────────────────────────────────────
+@cli.command("fidelity-sync")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name (e.g. lilich, nbossn_fidelity)")
+@click.option("--output", "-o", default=None,
+              help="Write holdings to this CSV file (optional)")
+@click.option("--no-headless", is_flag=True, default=False,
+              help="Show browser window (useful for debugging or manual 2FA)")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing any files")
+def fidelity_sync(portfolio: str, output: str | None, no_headless: bool, dry_run: bool) -> None:
+    """Download live Fidelity positions via automated browser login.
+
+    Logs into Fidelity with FIDELITY_* credentials from .env, exports the
+    positions CSV, and parses it through the standard fidelity_reader pipeline.
+
+    Works for all account types: brokerage, IRA, trust (lilich), 401k.
+
+    \b
+    Prerequisites (add to .env):
+      FIDELITY_USERNAME       — your Fidelity username
+      FIDELITY_PASSWORD       — your Fidelity password
+      FIDELITY_2FA_SECRET     — Base32 TOTP secret from Fidelity Security Center
+                                (enroll an authenticator app, copy the setup key)
+
+    For lilich (separate login), also set:
+      FIDELITY_LILICH_USERNAME / FIDELITY_LILICH_PASSWORD / FIDELITY_LILICH_2FA_SECRET
+    And set "fidelity_creds_prefix": "LILICH" in portfolios.json.
+
+    Use --no-headless to see the browser window and handle 2FA interactively.
+    """
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.fidelity_scraper import (
+        read_fidelity_live, FidelityScraperError, FidelityCredentialError, FidelityAuthError
+    )
+    from src.portfolio.transaction_reader import export_holdings_to_csv
+
+    try:
+        config = get_portfolio_config(portfolio)
+    except Exception as e:
+        raise click.UsageError(f"Unknown portfolio '{portfolio}': {e}")
+
+    creds_prefix = getattr(config, "fidelity_creds_prefix", "") or ""
+    account_filter = getattr(config, "fidelity_account_filter", None)
+
+    click.echo(f"\n🏦 Connecting to Fidelity for portfolio: {portfolio}")
+    if creds_prefix:
+        click.echo(f"   Credentials: FIDELITY_{creds_prefix.upper()}_*")
+    if account_filter:
+        click.echo(f"   Account filter: {account_filter}")
+    click.echo(f"   Headless: {not no_headless}\n")
+
+    try:
+        holdings = read_fidelity_live(
+            portfolio_name=portfolio,
+            creds_prefix=creds_prefix,
+            account_filter=account_filter,
+            headless=not no_headless,
+        )
+    except FidelityCredentialError as e:
+        raise click.UsageError(str(e))
+    except FidelityAuthError as e:
+        raise click.UsageError(f"Authentication failed: {e}")
+    except FidelityScraperError as e:
+        raise click.UsageError(f"Scrape failed: {e}")
+
+    click.echo(f"Fidelity holdings for {portfolio} ({len(holdings)}):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    if output:
+        export_holdings_to_csv(holdings, output)
+        click.echo(f"\nPortfolio CSV written to {output}")
+    else:
+        click.echo(f"\n(No --output specified — holdings not written)")
+        click.echo(f"Tip: financial-bytes fidelity-sync --portfolio {portfolio} --output fidelity-{portfolio}.csv")
+
+
 # ── plaid-sync ────────────────────────────────────────────────────
 @cli.command("plaid-sync")
 @click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
@@ -1348,6 +1435,101 @@ def remove_reminder_cmd(reminder_id: str) -> None:
         click.echo(f"✓ Reminder {reminder_id!r} removed.")
     else:
         click.echo(f"No reminder found with ID {reminder_id!r}.")
+
+
+@cli.command("compare-providers")
+@click.argument("tickers", nargs=-1, required=False)
+@click.option("--portfolio", default=None, help="Load tickers from portfolio CSV")
+@click.option("--portfolio-name", default=None, help="Load tickers from portfolios.json entry")
+@click.option("--output", default=None, help="Write JSON results to this file path")
+def compare_providers(tickers, portfolio, portfolio_name, output):
+    """
+    Compare Alpaca vs yfinance price data for reliability testing.
+
+    Run this BEFORE switching DATA_PROVIDER=alpaca in .env to validate
+    that prices agree within 0.5% tolerance. Requires ALPACA_API_KEY + ALPACA_SECRET_KEY.
+
+    Examples:
+      financial-bytes compare-providers AAPL MSFT GOOG NVDA
+      financial-bytes compare-providers --portfolio portfolio.csv
+      financial-bytes compare-providers --portfolio-name nbossn --output /tmp/provider-cmp.json
+    """
+    import json
+    from src.api.alpaca_client import compare_batch_with_yfinance, AlpacaClientError
+
+    # Resolve ticker list
+    all_tickers = list(tickers) if tickers else []
+
+    if portfolio:
+        from src.portfolio.reader import read_portfolio
+        holdings = read_portfolio(portfolio)
+        all_tickers += [h.ticker for h in holdings if h.ticker not in all_tickers]
+
+    if portfolio_name:
+        from src.portfolio.portfolio_config import load_portfolio_defs
+        from src.scheduler import _resolve_portfolio_csv
+        defs = load_portfolio_defs()
+        pdef = next((d for d in defs if d.name == portfolio_name), None)
+        if pdef is None:
+            click.echo(f"Portfolio {portfolio_name!r} not found in portfolios.json", err=True)
+            raise SystemExit(1)
+        csv_path, tmp_path = _resolve_portfolio_csv(pdef)
+        if csv_path:
+            from src.portfolio.reader import read_portfolio
+            holdings = read_portfolio(csv_path)
+            all_tickers += [h.ticker for h in holdings if h.ticker not in all_tickers]
+            if tmp_path:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    if not all_tickers:
+        click.echo("No tickers specified. Use TICKER args, --portfolio, or --portfolio-name.", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Comparing Alpaca vs yfinance for {len(all_tickers)} tickers...")
+    try:
+        results = compare_batch_with_yfinance(all_tickers)
+    except AlpacaClientError as e:
+        click.echo(f"Alpaca config error: {e}", err=True)
+        click.echo("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env. Get keys at: https://alpaca.markets")
+        raise SystemExit(1)
+
+    # Summary stats
+    agree = sum(1 for r in results if r["agreement"])
+    fail_a = sum(1 for r in results if not r["alpaca_ok"])
+    fail_y = sum(1 for r in results if not r["yfinance_ok"])
+    diverge = [r for r in results if not r["agreement"] and r.get("price_diff_pct") is not None]
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"  Tickers tested:     {len(all_tickers)}")
+    click.echo(f"  Agreement (<0.5%):  {agree}/{len(all_tickers)}")
+    click.echo(f"  Alpaca failures:    {fail_a}")
+    click.echo(f"  yfinance failures:  {fail_y}")
+    click.echo(f"  Price divergences:  {len(diverge)}")
+    click.echo(f"{'='*60}")
+
+    if diverge:
+        click.echo("\nDivergences (>0.5%):")
+        for r in sorted(diverge, key=lambda x: x.get("price_diff_pct", 0), reverse=True):
+            click.echo(
+                f"  {r['ticker']:8s}  Alpaca=${r['alpaca_price']:.4f}  "
+                f"yfinance=${r['yfinance_price']:.4f}  diff={r['price_diff_pct']:.4f}%"
+            )
+
+    if agree == len(all_tickers) and not fail_a:
+        click.echo("\n✅ Full agreement — safe to set DATA_PROVIDER=alpaca in .env")
+    elif agree >= len(all_tickers) * 0.95:
+        click.echo(f"\n⚠️  {len(all_tickers) - agree} disagreement(s) — review before switching")
+    else:
+        click.echo(f"\n❌ {len(all_tickers) - agree} disagreements — investigate before switching provider")
+
+    if output:
+        with open(output, "w") as f:
+            json.dump(results, f, indent=2)
+        click.echo(f"\nResults written to {output}")
 
 
 if __name__ == "__main__":

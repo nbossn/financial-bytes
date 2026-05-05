@@ -114,6 +114,35 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         else:
             logger.debug(f"[plaid] {pdef.plaid_access_token_env} not set — skipping Plaid")
 
+    # ── Fidelity Scraper (live, when credentials are configured) ─────
+    if pdef.fidelity_creds_prefix is not None:
+        import os
+        creds_prefix = pdef.fidelity_creds_prefix or ""
+        env_prefix = f"FIDELITY_{creds_prefix.upper()}_" if creds_prefix else "FIDELITY_"
+        if os.getenv(f"{env_prefix}USERNAME") and os.getenv(f"{env_prefix}PASSWORD"):
+            try:
+                from src.portfolio.fidelity_scraper import read_fidelity_live
+                from src.portfolio.transaction_reader import export_holdings_to_csv
+                logger.info(f"[fidelity] Loading live holdings for {portfolio_name} via scraper...")
+                holdings = read_fidelity_live(
+                    portfolio_name=portfolio_name,
+                    creds_prefix=creds_prefix,
+                    account_filter=pdef.fidelity_account_filter,
+                    headless=True,
+                )
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
+                ) as tmp:
+                    tmp_path = tmp.name
+                export_holdings_to_csv(holdings, tmp_path)
+                return tmp_path, True
+            except Exception as e:
+                logger.warning(
+                    f"[fidelity] Live scrape failed ({e}) — falling through to static CSV"
+                )
+        else:
+            logger.debug(f"[fidelity] {env_prefix}USERNAME not set — skipping live scrape")
+
     # ── Fidelity CSV (static export fallback) ────────────────────────
     if pdef.fidelity_positions:
         from src.portfolio.fidelity_reader import read_fidelity_positions
