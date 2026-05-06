@@ -9,6 +9,10 @@ portfolio.json
 portfolios.json
 data/*_purchase_history.json
 
+# Fidelity scraper runtime data (cookies = session tokens; debug screenshots may contain PII)
+data/fidelity_sessions/
+data/fidelity_debug/
+
 # Newsletter output (managed via fullstack agent commits)
 newsletters/**/*.html
 newsletters/**/*.pdf
