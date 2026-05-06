@@ -268,35 +268,62 @@ atexit.register(_atexit_chrome_cleanup)
 
 
 def _kill_existing_chrome_debug() -> None:
-    """Kill any Chrome instance holding our debug port."""
+    """Kill all Chrome processes and clear stale profile lock files.
+
+    We kill ALL Chrome (not just debug-port holders) because a Chrome window
+    from a previous run that exited without cleanup leaves a lockfile in the
+    profile directory. Chrome exits immediately with code 21 if the lockfile
+    is present, even if no process currently holds it.
+    """
+    # 1. Kill all Chrome Windows processes via PowerShell
+    try:
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "Get-Process -Name chrome -ErrorAction SilentlyContinue | Stop-Process -Force"],
+            capture_output=True, timeout=10,
+        )
+    except Exception:
+        pass
+
+    # 2. Kill any Linux-visible process holding the debug port
     try:
         subprocess.run(
             ["fuser", "-k", f"{_DEBUG_PORT}/tcp"],
             capture_output=True, timeout=5,
         )
-        time.sleep(1)
     except Exception:
         pass
+
+    time.sleep(1.5)
+
+    # 3. Remove stale profile lockfile (Chrome won't start if this exists)
+    lockfile = Path(_WSL_DL_DIR.replace("Temp\\fidelity_dl", "")) / \
+        "Local" / "fidelity_automation" / "chrome_profile" / "lockfile"
+    # Build directly from known Windows user path
+    wsl_profile = Path(f"/mnt/c/Users/{_WIN_USERNAME}/AppData/Local/fidelity_automation/chrome_profile")
+    for lf in [wsl_profile / "lockfile", wsl_profile / "Default" / "lockfile"]:
+        try:
+            lf.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _make_driver(headless: bool = False):
     """
-    Launch Windows Chrome from WSL2 with debugging port on 0.0.0.0,
-    then connect DrissionPage in existing_only mode via the Windows host IP.
+    Launch Windows Chrome from WSL2, then connect DrissionPage via 127.0.0.1.
 
-    Why self-launch instead of DrissionPage's built-in launch:
-      - Chrome must bind on 0.0.0.0 (--remote-debugging-address=0.0.0.0) so
-        WSL2 Linux can reach it via the Windows gateway IP.
-      - We pass Windows-format paths (user-data-dir, download dir) which Chrome
-        interprets correctly since it runs as a Windows process.
-      - This matches the architecture of the old Selenium approach but without
-        the chromedriver.exe layer.
+    Networking note:
+      Chrome 120+ ignores --remote-debugging-address=0.0.0.0 and always binds
+      the debug port to 127.0.0.1 only. With WSL2 mirrored networking
+      (networkingMode=mirrored in ~/.wslconfig) the Linux and Windows network
+      stacks share a single loopback, so 127.0.0.1 in WSL reaches Chrome
+      directly — no gateway IP or port-proxy required.
+
+      Prerequisites: C:\\Users\\<user>\\.wslconfig with [wsl2] networkingMode=mirrored,
+      then `wsl --shutdown` once to apply.
     """
     global _chrome_proc
     from DrissionPage import ChromiumPage, ChromiumOptions
-
-    win_ip = _get_windows_host_ip()
-    logger.info(f"[fidelity] Windows host IP: {win_ip}")
 
     # Ensure download and debug dirs exist
     Path(_WSL_DL_DIR).mkdir(parents=True, exist_ok=True)
@@ -309,8 +336,11 @@ def _make_driver(headless: bool = False):
     chrome_args = [
         _WSL_CHROME_BIN,
         f"--remote-debugging-port={_DEBUG_PORT}",
-        "--remote-debugging-address=0.0.0.0",        # WSL2 accessibility
+        # NOTE: --remote-debugging-address=0.0.0.0 is silently ignored by Chrome
+        # 120+. With mirrored WSL2 networking we don't need it — Chrome binds to
+        # 127.0.0.1 and WSL reaches it directly at 127.0.0.1.
         f"--user-data-dir={_WIN_PROFILE_DIR}",        # Windows path
+        "--profile-directory=Default",                # skip profile picker on first run
         "--disable-blink-features=AutomationControlled",  # PRIMARY stealth fix
         "--window-size=1536,864",                     # common real-user size
         "--lang=en-US",
@@ -341,7 +371,7 @@ def _make_driver(headless: bool = False):
     # wait times out (Chrome failed to start), we still terminate the process
     # and don't leave a global pointing at an orphan.
     try:
-        _wait_for_port(win_ip, _DEBUG_PORT, timeout=15)
+        _wait_for_port("127.0.0.1", _DEBUG_PORT, timeout=30)
     except FidelityScraperError:
         _proc.terminate()
         raise
@@ -351,7 +381,7 @@ def _make_driver(headless: bool = False):
     # Connect DrissionPage (existing_only — don't re-launch Chrome)
     opts = ChromiumOptions()
     opts.existing_only()
-    opts.set_address(f"{win_ip}:{_DEBUG_PORT}")
+    opts.set_address(f"127.0.0.1:{_DEBUG_PORT}")
 
     page = ChromiumPage(addr_or_opts=opts)
 
