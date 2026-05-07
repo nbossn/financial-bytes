@@ -465,22 +465,163 @@ def _save_debug_screenshot(png_bytes: bytes, label: str) -> None:
         pass
 
 
-def _identify_page_state(png_bytes: bytes, url: str) -> tuple[PageState, str]:
+def _dom_inspect_state(page) -> PageState | None:
+    """
+    Inspect DOM element presence to identify page state without Haiku.
+
+    More reliable than URL pattern matching because element IDs are stable
+    Fidelity-specific identifiers, whereas URLs vary with redirects.
+
+    Returns None if DOM inspection can't determine the state conclusively.
+    """
+    # Short timeouts — we want to check presence, not wait for appearance.
+    # Page is already loaded when this is called; 0.5s is enough for DOM readiness.
+    _T = 0.5
+    try:
+        def _visible(el) -> bool:
+            """Return True only if the element exists and is displayed."""
+            if not el:
+                return False
+            try:
+                return bool(el.states.is_displayed)
+            except Exception:
+                return True  # DrissionPage versions without .states — assume visible
+
+        # Bot/error interstitials — check these first so they aren't mistaken for login
+        # Akamai "can't complete this action" and similar blocks have a "Go back to login"
+        # link on an otherwise blank page — the login form itself is absent/hidden.
+        body_text = ""
+        try:
+            body = page.ele("tag:body", timeout=_T)
+            if body:
+                body_text = (body.text or "").lower()
+        except Exception:
+            pass
+        if "can't complete this action" in body_text or "go back to login" in body_text:
+            return PageState.ACCESS_DENIED
+
+        # Login page: username input must be visible (not just present in DOM)
+        el = page.ele("#dom-username-input", timeout=_T)
+        if _visible(el):
+            return PageState.LOGIN
+
+        # TOTP page: 6-digit authenticator code input (must be visible)
+        for sel in [
+            "#dom-totp-security-code-input",
+            "css:input[name*='totp']",
+            "css:input[autocomplete='one-time-code']",
+        ]:
+            el = page.ele(sel, timeout=_T)
+            if _visible(el):
+                return PageState.MFA_TOTP
+
+        # Positions page: download/export button appears only when table is loaded
+        for sel in [
+            "css:button[aria-label*='Download']",
+            "css:a[aria-label*='Download']",
+            "css:[data-testid*='export']",
+        ]:
+            el = page.ele(sel, timeout=_T)
+            if _visible(el):
+                return PageState.POSITIONS_READY
+
+        # Portfolio summary (positions sub-nav absent)
+        for sel in ["css:.portfolio-summary", "css:.acct-selector"]:
+            el = page.ele(sel, timeout=_T)
+            if _visible(el):
+                return PageState.PORTFOLIO
+
+    except Exception:
+        pass
+    return None
+
+
+_CLAUDE_CREDS_PATH = Path.home() / ".claude" / ".credentials.json"
+
+
+def _get_anthropic_client():
+    """
+    Return an authenticated Anthropic client.
+
+    Priority:
+      1. ANTHROPIC_API_KEY env var (explicit API key)
+      2. Claude Code OAuth token from ~/.claude/.credentials.json
+         (uses the active Claude.ai subscription — no separate API key needed)
+
+    Returns None if no authentication is available.
+    """
+    from anthropic import Anthropic
+
+    # 1. Explicit API key — must look like a real key (sk-ant-api...), not a placeholder
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if api_key and api_key.startswith("sk-ant-api"):
+        return Anthropic(api_key=api_key)
+
+    # 2. Claude Code OAuth token
+    try:
+        creds = json.loads(_CLAUDE_CREDS_PATH.read_text())
+        oauth = creds.get("claudeAiOauth", {})
+        access_token = oauth.get("accessToken", "").strip()
+        expires_at_ms = oauth.get("expiresAt", 0)
+
+        if not access_token:
+            return None
+
+        if expires_at_ms and expires_at_ms < time.time() * 1000:
+            logger.warning(
+                "[fidelity] Claude Code OAuth token is expired — "
+                "reopen Claude Code to refresh it"
+            )
+            return None
+
+        expires_in_h = (expires_at_ms / 1000 - time.time()) / 3600
+        logger.info(
+            f"[fidelity] Using Claude Code OAuth token "
+            f"(valid for {expires_in_h:.1f}h)"
+        )
+        # Temporarily clear ANTHROPIC_API_KEY from the environment so the SDK
+        # doesn't send it alongside the Bearer token — the placeholder value
+        # "your-anthropic-api-key" (from .env) causes a 401 if it leaks through.
+        _old_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+        try:
+            client = Anthropic(auth_token=access_token)
+        finally:
+            if _old_key is not None:
+                os.environ["ANTHROPIC_API_KEY"] = _old_key
+        return client
+
+    except Exception as e:
+        logger.debug(f"[fidelity] Could not load Claude Code OAuth token: {e}")
+        return None
+
+
+def _identify_page_state(
+    png_bytes: bytes,
+    url: str,
+    page=None,
+) -> tuple[PageState, str]:
     """
     Use Claude Haiku vision to classify the current browser page state.
 
-    Falls back to URL-based heuristics if ANTHROPIC_API_KEY is not set or
-    if the Haiku call fails — so the scraper degrades gracefully.
-    """
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    Auth priority (automatic — no config needed):
+      1. ANTHROPIC_API_KEY env var
+      2. Claude Code OAuth token (~/.claude/.credentials.json)
 
-    if not api_key or not png_bytes:
+    Fallback order when Haiku is unavailable or fails:
+      1. DOM inspection via page object (most reliable — element IDs are stable)
+      2. URL-based heuristics (least reliable — URLs vary with redirects)
+    """
+    client = _get_anthropic_client()
+
+    if client is None or not png_bytes:
+        if page is not None:
+            dom_state = _dom_inspect_state(page)
+            if dom_state is not None:
+                return dom_state, "dom-inspect (no auth)"
         state = _url_fallback_state(url)
-        return state, "url-heuristic (no API key)"
+        return state, "url-heuristic (no auth)"
 
     try:
-        from anthropic import Anthropic
-        client = Anthropic(api_key=api_key)
 
         img_b64 = base64.standard_b64encode(
             _resize_screenshot(png_bytes, max_width=1024)
@@ -521,7 +662,14 @@ def _identify_page_state(png_bytes: bytes, url: str) -> tuple[PageState, str]:
             }],
         )
 
-        result = json.loads(response.content[0].text.strip())
+        raw_text = response.content[0].text.strip()
+        # Strip markdown code fences if Haiku wraps the JSON (```json ... ```)
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```", 2)[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+            raw_text = raw_text.strip()
+        result = json.loads(raw_text)
         raw = result.get("state", "UNKNOWN").upper()
         state_map = {
             "LOGIN":             PageState.LOGIN,
@@ -542,17 +690,29 @@ def _identify_page_state(png_bytes: bytes, url: str) -> tuple[PageState, str]:
         return state, detail
 
     except Exception as e:
-        logger.warning(f"[fidelity] Visual classification error ({e}) — URL fallback")
-        return _url_fallback_state(url), f"fallback: {e}"
+        logger.warning(f"[fidelity] Visual classification error ({e}) — DOM/URL fallback")
+        if page is not None:
+            dom_state = _dom_inspect_state(page)
+            if dom_state is not None:
+                logger.info(f"[fidelity] DOM inspection resolved state: {dom_state.value}")
+                return dom_state, f"dom-inspect fallback: {e}"
+        return _url_fallback_state(url), f"url fallback: {e}"
 
 
 def _url_fallback_state(url: str) -> PageState:
-    """Best-effort page state from URL when Haiku is unavailable."""
+    """Best-effort page state from URL when Haiku and DOM inspection are unavailable.
+
+    Key fix: Fidelity's login page redirects to a URL containing 'signin', so
+    'signin' must be treated as LOGIN — not MFA_TOTP. Only explicit /mfa or /2fa
+    paths are classified as TOTP.
+    """
     u = url.lower()
-    if "prgw/digital/login" in u:
-        return PageState.LOGIN
-    if "signin" in u or "/mfa" in u or "/2fa" in u:
+    # TOTP/MFA paths are explicit sub-paths — check these first (more specific)
+    if "/mfa" in u or "/2fa" in u or "totp" in u or "authenticator" in u:
         return PageState.MFA_TOTP
+    # Login / sign-in pages: prgw/digital/login OR any signin redirect URL
+    if "prgw/digital/login" in u or "signin" in u or "/login" in u:
+        return PageState.LOGIN
     if "ftgw/digital/portfolio/positions" in u:
         return PageState.POSITIONS_LOADING
     if "ftgw/digital/portfolio" in u:
@@ -587,7 +747,7 @@ def _wait_for_stable_state(
     while time.time() < deadline:
         time.sleep(poll_interval)
         screenshot = _take_screenshot(page)
-        state, detail = _identify_page_state(screenshot, page.url)
+        state, detail = _identify_page_state(screenshot, page.url, page)
         last = (state, detail, screenshot)
         if state in target_states:
             return last
@@ -701,7 +861,7 @@ def _is_authenticated(page, settle_secs: float = 6.0) -> bool:
         page.get("https://digital.fidelity.com/ftgw/digital/portfolio/positions")
         time.sleep(settle_secs)
         screenshot = _take_screenshot(page)
-        state, detail = _identify_page_state(screenshot, page.url)
+        state, detail = _identify_page_state(screenshot, page.url, page)
         logger.info(f"[fidelity] Auth check → {state.value}: {detail}")
         return state in {PageState.PORTFOLIO, PageState.POSITIONS_LOADING, PageState.POSITIONS_READY}
     except Exception as e:
@@ -836,7 +996,7 @@ def _single_login_attempt(creds_prefix: str) -> str | None:
 
         # ── Step 2: Visually confirm login page ──────────────────────────────
         screenshot = _take_screenshot(page)
-        state, detail = _identify_page_state(screenshot, page.url)
+        state, detail = _identify_page_state(screenshot, page.url, page)
         logger.info(f"[fidelity] Initial state: {state.value} — {detail}")
 
         if state == PageState.BOT_CHALLENGE:
@@ -1107,7 +1267,7 @@ def setup_fidelity_cookies(creds_prefix: str = "", timeout_secs: int = 300) -> N
         while time.time() < deadline:
             time.sleep(3)
             screenshot = _take_screenshot(page)
-            state, _ = _identify_page_state(screenshot, page.url)
+            state, _ = _identify_page_state(screenshot, page.url, page)
             if state in {PageState.PORTFOLIO, PageState.POSITIONS_LOADING, PageState.POSITIONS_READY}:
                 break
         else:
