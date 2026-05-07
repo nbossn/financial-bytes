@@ -79,7 +79,7 @@ _WIN_CHROME_BIN = os.getenv(
 _WSL_CHROME_BIN = _WIN_CHROME_BIN.replace("C:\\", "/mnt/c/").replace("\\", "/")
 
 _WIN_PROFILE_DIR = rf"C:\Users\{_WIN_USERNAME}\AppData\Local\fidelity_automation\chrome_profile"
-_WIN_DL_DIR = rf"C:\Users\{_WIN_USERNAME}\AppData\Local\Temp\fidelity_dl"
+_WIN_DL_DIR = rf"C:\Users\{_WIN_USERNAME}\Downloads"
 _WSL_DL_DIR = _WIN_DL_DIR.replace("C:\\", "/mnt/c/").replace("\\", "/")
 
 _COOKIE_DIR = _PROJECT_ROOT / "data" / "fidelity_sessions"
@@ -275,17 +275,23 @@ def _kill_existing_chrome_debug() -> None:
     profile directory. Chrome exits immediately with code 21 if the lockfile
     is present, even if no process currently holds it.
     """
-    # 1. Kill all Chrome Windows processes via PowerShell
+    # 1. Kill ONLY the Chrome process holding our specific debug port.
+    #    We do NOT kill all chrome.exe — that would close the user's personal
+    #    Chrome tabs.  Only the automation Chrome (launched with
+    #    --remote-debugging-port=_DEBUG_PORT) needs to be stopped.
     try:
         subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command",
-             "Get-Process -Name chrome -ErrorAction SilentlyContinue | Stop-Process -Force"],
+             f"Get-WmiObject Win32_Process | "
+             f"Where-Object {{ $_.Name -eq 'chrome.exe' -and "
+             f"$_.CommandLine -like '*remote-debugging-port={_DEBUG_PORT}*' }} | "
+             f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"],
             capture_output=True, timeout=10,
         )
     except Exception:
         pass
 
-    # 2. Kill any Linux-visible process holding the debug port
+    # 2. Belt-and-suspenders: kill any Linux-visible process holding the debug port
     try:
         subprocess.run(
             ["fuser", "-k", f"{_DEBUG_PORT}/tcp"],
@@ -980,10 +986,9 @@ def _is_authenticated(page, settle_secs: float = 6.0) -> bool:
 
 # ── CSV download (hardened) ───────────────────────────────────────────────────
 
-# Windows Downloads folder — fallback poll location when Chrome ignores the
-# --download-default-directory launch flag (profile setting takes precedence).
-_WIN_DOWNLOADS_DIR = rf"C:\Users\{_WIN_USERNAME}\Downloads"
-_WSL_DOWNLOADS_DIR = _WIN_DOWNLOADS_DIR.replace("C:\\", "/mnt/c/").replace("\\", "/")
+# _WSL_DL_DIR is ~/Downloads — the standard user download location.
+# Chrome's profile Preferences are patched to point here before each launch.
+_WSL_DOWNLOADS_DIR = _WSL_DL_DIR  # alias kept for _poll_for_csv compatibility
 
 
 def _cdp_set_download_path(page) -> None:
