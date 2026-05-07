@@ -308,6 +308,38 @@ def _kill_existing_chrome_debug() -> None:
             pass
 
 
+def _patch_chrome_download_prefs() -> None:
+    """
+    Patch Chrome's profile Preferences JSON to auto-download to _WIN_DL_DIR.
+
+    Why: Chrome 120+ ignores --download-default-directory if the profile already
+    has a saved download path.  Patching the Preferences file before Chrome
+    starts is the only reliable fix — it sets BOTH the directory AND disables
+    the "Ask where to save each file" dialog, so downloads land silently in our
+    configured folder.
+
+    Must be called AFTER _kill_existing_chrome_debug() (Chrome must not be
+    running when we write the Preferences file — concurrent writes corrupt it).
+    """
+    prefs_path = Path(
+        f"/mnt/c/Users/{_WIN_USERNAME}/AppData/Local"
+        f"/fidelity_automation/chrome_profile/Default/Preferences"
+    )
+    if not prefs_path.exists():
+        logger.debug("[fidelity] Chrome Preferences not found — will be created on first launch")
+        return
+    try:
+        prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+        dl = prefs.setdefault("download", {})
+        dl["default_directory"]   = _WIN_DL_DIR   # Windows path — Chrome is a Windows process
+        dl["prompt_for_download"]  = False          # never ask where to save
+        dl["directory_upgrade"]    = True           # allow changing dir without asking
+        prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
+        logger.info(f"[fidelity] Chrome prefs patched — auto-download → {_WIN_DL_DIR}")
+    except Exception as e:
+        logger.warning(f"[fidelity] Could not patch Chrome prefs ({e}) — save dialog may appear")
+
+
 def _make_driver(headless: bool = False):
     """
     Launch Windows Chrome from WSL2, then connect DrissionPage via 127.0.0.1.
@@ -331,6 +363,13 @@ def _make_driver(headless: bool = False):
 
     # Kill any stale Chrome on our debug port
     _kill_existing_chrome_debug()
+
+    # Patch Chrome profile preferences BEFORE launch.
+    # Chrome ignores --download-default-directory when the profile already has
+    # a saved download directory.  Writing to the Preferences JSON before Chrome
+    # starts is the only reliable way to set both the directory AND suppress the
+    # "Ask where to save" dialog.
+    _patch_chrome_download_prefs()
 
     # Chrome launch args (Windows process — uses Windows path format)
     chrome_args = [
@@ -853,6 +892,76 @@ def _human_click(page, element) -> None:
             pass
 
 
+def _clear_field(page, element) -> None:
+    """
+    Robustly clear a form field before typing.
+
+    Chrome autofill (and browser-saved passwords) pre-populate fields on page
+    load.  element.clear() / element.input('', clear=True) do NOT touch these
+    values reliably — the autofill value is held separately from the DOM input
+    value and only syncs on focus.  Three strategies in sequence:
+
+      1. JS reset via native setter — triggers React/Angular synthetic events
+         so framework-bound state tracks the clear.
+      2. Ctrl+A → Delete — visual selection delete; catches any characters that
+         survived the JS clear (e.g. password managers that re-inject on blur).
+      3. Verification pass — read back the field value; if still non-empty,
+         do a final triple-click → Backspace sweep.
+
+    This function leaves the field focused and empty, ready for _human_type.
+    """
+    from DrissionPage.common import Actions
+
+    _human_click(page, element)
+    time.sleep(random.uniform(0.25, 0.45))
+
+    # ── Strategy 1: native-setter JS clear (React-safe) ──────────────────────
+    try:
+        element.run_js(
+            "var setter = Object.getOwnPropertyDescriptor("
+            "    window.HTMLInputElement.prototype, 'value').set;"
+            "setter.call(this, '');"
+            "this.dispatchEvent(new Event('input',  {bubbles: true}));"
+            "this.dispatchEvent(new Event('change', {bubbles: true}));"
+        )
+    except Exception:
+        pass
+    time.sleep(0.08)
+
+    # ── Strategy 2: Ctrl+A → Delete (visual sweep) ───────────────────────────
+    try:
+        actions = Actions(page)
+        actions.key_down("ctrl")
+        actions.type("a")
+        actions.key_up("ctrl")
+        time.sleep(0.06)
+        actions.key_down("delete")
+        actions.key_up("delete")
+    except Exception:
+        pass
+    time.sleep(random.uniform(0.12, 0.22))
+
+    # ── Strategy 3: verify + fallback triple-click sweep ─────────────────────
+    try:
+        remaining = element.run_js("return this.value;") or ""
+        if remaining:
+            logger.debug(
+                f"[fidelity] Field still has {len(remaining)} chars after clear — triple-click sweep"
+            )
+            try:
+                element.click.triple()          # select all via triple-click
+                time.sleep(0.08)
+                actions = Actions(page)
+                actions.key_down("backspace")
+                actions.key_up("backspace")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    time.sleep(random.uniform(0.1, 0.2))
+
+
 # ── Auth check ────────────────────────────────────────────────────────────────
 
 def _is_authenticated(page, settle_secs: float = 6.0) -> bool:
@@ -871,31 +980,274 @@ def _is_authenticated(page, settle_secs: float = 6.0) -> bool:
 
 # ── CSV download (hardened) ───────────────────────────────────────────────────
 
-def _download_csv_from_positions(page) -> str:
+# Windows Downloads folder — fallback poll location when Chrome ignores the
+# --download-default-directory launch flag (profile setting takes precedence).
+_WIN_DOWNLOADS_DIR = rf"C:\Users\{_WIN_USERNAME}\Downloads"
+_WSL_DOWNLOADS_DIR = _WIN_DOWNLOADS_DIR.replace("C:\\", "/mnt/c/").replace("\\", "/")
+
+
+def _cdp_set_download_path(page) -> None:
     """
-    Visually confirm the positions table is fully loaded, then click Download.
-    Polls for the CSV file with an extended timeout.
-    Saves a debug screenshot if download fails.
+    Override Chrome's saved download directory via CDP.
+
+    Chrome 120+ silently ignores --download-default-directory when the profile
+    already has a saved download path.  Browser.setDownloadBehavior is the only
+    reliable way to redirect downloads at runtime without touching the profile.
     """
-    # Clear any leftover CSVs from previous runs
-    for old in glob.glob(f"{_WSL_DL_DIR}/*.csv"):
+    try:
+        page.run_cdp(
+            "Browser.setDownloadBehavior",
+            behavior="allow",
+            downloadPath=_WIN_DL_DIR,
+            eventsEnabled=True,
+        )
+        logger.info(f"[fidelity] CDP download path → {_WIN_DL_DIR}")
+    except Exception as e:
+        logger.warning(
+            f"[fidelity] CDP setDownloadBehavior failed ({e}) — "
+            "will also poll ~/Downloads as fallback"
+        )
+
+
+def _click_download_trigger(page) -> bool:
+    """
+    Find and click the CSV download trigger on Fidelity's positions page.
+
+    Returns True if a click was dispatched, False if no trigger found.
+
+    Key design constraint: the ⋮ more-options menu auto-closes on any mouse
+    movement or blur event.  The old approach returned the element to the caller
+    (which then called _human_click with mouse movement) — this always closed the
+    menu before the click could land.
+
+    This function handles the entire sequence atomically:
+      1. Find and _human_click the ⋮ button (opens menu)
+      2. Immediately (no mouse movement, no multi-second selector loops) find
+         the Download item using DOM text scan with short per-attempt timeouts
+      3. Click the item directly (element.click.left()) — no mouse movement that
+         would close the menu
+
+    All "more button" searches use short (0.5s) timeouts and are done BEFORE
+    opening the menu, so we don't burn time post-open.
+    """
+    def _visible(el) -> bool:
+        if not el:
+            return False
         try:
-            Path(old).unlink()
+            return bool(el.states.is_displayed)
+        except Exception:
+            return True
+
+    def _direct_click(el) -> bool:
+        """Click an element without mouse movement (preserves menu open state)."""
+        try:
+            el.click.left()
+            return True
+        except Exception:
+            try:
+                el.run_js("this.click();")
+                return True
+            except Exception:
+                return False
+
+    # ── A. Direct download button (no menu needed) ────────────────────────────
+    for sel in [
+        "css:button[aria-label*='Download']",
+        "css:button[aria-label*='download']",
+        "css:a[aria-label*='Download']",
+        "css:a[href*='.csv']",
+    ]:
+        try:
+            el = page.ele(sel, timeout=0.5)
+            if _visible(el):
+                logger.info(f"[fidelity] Direct download button: {sel}")
+                _human_click(page, el)
+                return True
+        except Exception:
+            continue
+
+    # ── B. ⋮ more-options menu — find button BEFORE opening ───────────────────
+    # Locate the more-button first (all lookups while menu is CLOSED).
+    more_btn = None
+
+    # Targeted selector search (fast — short timeouts)
+    for sel in [
+        "css:button[aria-label*='More']",
+        "css:button[aria-label*='more']",
+        "css:button[aria-label*='Options']",
+        "css:button[aria-label*='Menu']",
+        "css:button[data-testid*='more']",
+        "css:button[data-testid*='menu']",
+        "css:button[data-testid*='overflow']",
+    ]:
+        try:
+            el = page.ele(sel, timeout=0.5)
+            if _visible(el):
+                more_btn = el
+                break
+        except Exception:
+            continue
+
+    # Fallback: button text/title/aria-label heuristic
+    if not more_btn:
+        try:
+            for btn in page.eles("css:button"):
+                try:
+                    label = (
+                        (btn.attr("aria-label") or "") +
+                        (btn.attr("title") or "") +
+                        (btn.text or "")
+                    ).lower()
+                    if (
+                        any(k in label for k in ("more", "option", "menu", "overflow"))
+                        and _visible(btn)
+                    ):
+                        more_btn = btn
+                        break
+                except Exception:
+                    continue
         except Exception:
             pass
 
-    # Wait for positions table — not just the page shell
+    if more_btn:
+        logger.info("[fidelity] Opening ⋮ more-options menu for Download…")
+        _human_click(page, more_btn)
+        time.sleep(0.5)  # brief render wait — keep short so menu stays open
+
+        # ── Immediately find and click the Download item ──────────────────────
+        # Use ONE fast DOM scan — no multi-selector loops with per-selector delays.
+        # Menu closes on mouse movement, so we use direct element.click.left()
+        # (not _human_click) once the item is found.
+        all_candidates: list = []
+        for sel in [
+            "css:[role='menuitem']",
+            "css:[role='option']",
+            "css:li",
+        ]:
+            try:
+                all_candidates.extend(page.eles(sel, timeout=0.3))
+            except Exception:
+                continue
+
+        for item in all_candidates:
+            try:
+                text = (item.text or item.attr("aria-label") or "").strip()
+                if text.lower() == "download" and _visible(item):
+                    logger.info(f"[fidelity] Download menu item found: '{text}' — clicking")
+                    if _direct_click(item):
+                        return True
+            except Exception:
+                continue
+
+        # Looser match (text contains "download") if exact match failed
+        for item in all_candidates:
+            try:
+                text = (item.text or item.attr("aria-label") or "").lower()
+                if "download" in text and _visible(item):
+                    logger.info(f"[fidelity] Download menu item (loose): '{text}' — clicking")
+                    if _direct_click(item):
+                        return True
+            except Exception:
+                continue
+
+        logger.warning("[fidelity] ⋮ menu opened but no Download item found inside")
+
+    # ── C. Last-resort: any visible button with "download" text ───────────────
+    try:
+        for btn in page.eles("css:button"):
+            try:
+                if "download" in (btn.text or "").lower() and _visible(btn):
+                    logger.info(f"[fidelity] Download button (text scan): '{btn.text}'")
+                    _human_click(page, btn)
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
+
+
+def _poll_for_csv(download_start_ts: float, timeout: float = 55.0) -> str | None:
+    """
+    Poll for a newly created CSV file.
+
+    Checks two locations (belt-and-suspenders for Chrome's download-directory
+    quirk):
+      1. _WSL_DL_DIR  — the CDP-overridden path (preferred)
+      2. _WSL_DOWNLOADS_DIR — Windows ~/Downloads (fallback when CDP is ignored)
+
+    Only accepts files created AFTER download_start_ts to avoid stale files.
+    Returns the WSL path of the CSV, or None on timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(1.5)
+        for search_dir in [_WSL_DL_DIR, _WSL_DOWNLOADS_DIR]:
+            candidates = [
+                f for f in glob.glob(f"{search_dir}/*.csv")
+                if not f.endswith(".crdownload")
+                and os.path.getmtime(f) >= download_start_ts
+            ]
+            if candidates:
+                path = max(candidates, key=os.path.getmtime)
+                logger.info(f"[fidelity] CSV found → {path}")
+                return path
+    return None
+
+
+def _download_csv_from_positions(page) -> str:
+    """
+    Confirm positions table is fully loaded, click Download, return CSV text.
+
+    Key improvements over v1:
+      • CDP download-path override (Chrome ignores --download-default-directory
+        when profile has a saved setting; CDP fixes this at runtime).
+      • Two-step download flow: direct button OR ⋮ menu → Download item.
+      • Dual-directory poll: configured dir + ~/Downloads fallback.
+      • Timestamp filter on poll so stale CSVs never match.
+    """
+    # ── 0. Ensure download dir exists ────────────────────────────────────────
+    # Download path is set via Chrome profile prefs in _patch_chrome_download_prefs()
+    # (called inside _make_driver before Chrome launches).  CDP setDownloadBehavior
+    # is a browser-level command and doesn't work reliably from a page-level CDP
+    # target — profile prefs are the correct fix.
+    Path(_WSL_DL_DIR).mkdir(parents=True, exist_ok=True)
+
+    # ── 1. Wait for positions table (with portfolio→positions auto-nav) ─────
+    # Include PORTFOLIO so we detect it fast instead of spinning until timeout.
+    # When detected, navigate to the positions URL and wait again.
     state, detail, screenshot = _wait_for_stable_state(
         page,
-        timeout=50.0,
-        poll_interval=3.0,
+        timeout=30.0,
+        poll_interval=2.5,
         target_states={
             PageState.POSITIONS_READY,
+            PageState.POSITIONS_LOADING,
+            PageState.PORTFOLIO,
             PageState.BOT_CHALLENGE,
             PageState.ACCESS_DENIED,
             PageState.UNKNOWN,
         },
     )
+
+    if state in {PageState.PORTFOLIO, PageState.POSITIONS_LOADING}:
+        logger.info(
+            f"[fidelity] On {state.value} — navigating directly to positions page…"
+        )
+        page.get("https://digital.fidelity.com/ftgw/digital/portfolio/positions")
+        time.sleep(random.uniform(3.0, 5.0))
+        state, detail, screenshot = _wait_for_stable_state(
+            page,
+            timeout=40.0,
+            poll_interval=3.0,
+            target_states={
+                PageState.POSITIONS_READY,
+                PageState.BOT_CHALLENGE,
+                PageState.ACCESS_DENIED,
+                PageState.UNKNOWN,
+            },
+        )
 
     if state != PageState.POSITIONS_READY:
         _save_debug_screenshot(screenshot, f"positions_not_ready_{state.value}")
@@ -906,36 +1258,13 @@ def _download_csv_from_positions(page) -> str:
 
     logger.info("[fidelity] Positions table loaded — locating Download button")
 
-    # Locate the Download button via multiple fallback strategies
-    download_el = None
-    for locator in [
-        "css:button[aria-label*='Download']",
-        "css:button[aria-label*='download']",
-        "css:a[href*='.csv']",
-        "css:[role='menuitem']",
-    ]:
-        try:
-            el = page.ele(locator, timeout=4)
-            if el and el.states.is_displayed:
-                download_el = el
-                break
-        except Exception:
-            continue
+    # ── 2. Find and click the download trigger atomically ────────────────────
+    # _click_download_trigger handles the ⋮ menu open+click in one shot so the
+    # menu never auto-closes between finding and clicking the Download item.
+    download_start_ts = time.time()
+    clicked = _click_download_trigger(page)
 
-    # Last-resort: scan all buttons for "download" text
-    if not download_el:
-        try:
-            for btn in page.eles("css:button"):
-                try:
-                    if "download" in (btn.text or "").lower() and btn.states.is_displayed:
-                        download_el = btn
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    if not download_el:
+    if not clicked:
         screenshot = _take_screenshot(page)
         _save_debug_screenshot(screenshot, "download_button_not_found")
         raise FidelityScraperError(
@@ -943,27 +1272,17 @@ def _download_csv_from_positions(page) -> str:
             "Debug screenshot saved to data/fidelity_debug/"
         )
 
-    _human_click(page, download_el)
-    logger.info("[fidelity] Download button clicked — waiting for CSV file")
+    # ── 3. Wait for file ─────────────────────────────────────────────────────
+    logger.info("[fidelity] Download triggered — polling for CSV file…")
 
-    # Poll for the CSV file (extended timeout vs old 30s)
-    deadline = time.time() + 50
-    csv_path = None
-    while time.time() < deadline:
-        time.sleep(1.5)
-        csvs = [
-            f for f in glob.glob(f"{_WSL_DL_DIR}/*.csv")
-            if not f.endswith(".crdownload")
-        ]
-        if csvs:
-            csv_path = max(csvs, key=os.path.getmtime)
-            break
+    csv_path = _poll_for_csv(download_start_ts, timeout=55.0)
 
     if not csv_path:
         screenshot = _take_screenshot(page)
         _save_debug_screenshot(screenshot, "download_timeout")
         raise FidelityScraperError(
-            f"Download timed out — no CSV appeared in {_WSL_DL_DIR} after 50s\n"
+            f"Download timed out — no CSV appeared in {_WSL_DL_DIR} or "
+            f"{_WSL_DOWNLOADS_DIR} after 55s\n"
             "Debug screenshot saved to data/fidelity_debug/"
         )
 
@@ -1023,6 +1342,10 @@ def _single_login_attempt(creds_prefix: str) -> str | None:
                 _save_debug_screenshot(_take_screenshot(page), "username_field_missing")
                 logger.warning("[fidelity] Username field not found")
                 return None
+            # Clear before typing — Chrome autofill / saved passwords may have
+            # pre-filled both fields.  _clear_field uses three strategies to
+            # guarantee the field is empty before _human_type runs.
+            _clear_field(page, username_el)
             _human_type(page, username_el, username)
             time.sleep(random.uniform(0.8, 1.6))
 
@@ -1032,6 +1355,7 @@ def _single_login_attempt(creds_prefix: str) -> str | None:
                 _save_debug_screenshot(_take_screenshot(page), "password_field_missing")
                 logger.warning("[fidelity] Password field not found")
                 return None
+            _clear_field(page, password_el)
             _human_type(page, password_el, password)
             time.sleep(random.uniform(1.0, 2.2))
 
