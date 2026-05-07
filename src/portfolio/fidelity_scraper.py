@@ -148,10 +148,11 @@ def _cookie_path(creds_prefix: str) -> Path:
 
 
 def _save_cookies(page, creds_prefix: str) -> None:
-    _COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+    _COOKIE_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
     path = _cookie_path(creds_prefix)
     cookies = page.cookies(all_info=True)
     path.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
+    path.chmod(0o600)  # live session cookies — owner-read only
     logger.info(f"[fidelity] Cookies saved → {path.name} ({len(cookies)} cookies)")
 
 
@@ -503,8 +504,9 @@ def _save_debug_screenshot(png_bytes: bytes, label: str) -> None:
     ts = time.strftime("%Y%m%d_%H%M%S")
     path = _DEBUG_DIR / f"{ts}_{label}.png"
     try:
-        _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        _DEBUG_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.write_bytes(png_bytes)
+        path.chmod(0o600)  # screenshots may show portfolio data — owner-read only
         logger.info(f"[fidelity] Debug screenshot → {path.name}")
     except Exception:
         pass
