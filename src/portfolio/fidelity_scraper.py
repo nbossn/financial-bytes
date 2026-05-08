@@ -1523,14 +1523,18 @@ def _download_positions_csv(
     Return Fidelity positions CSV text.
 
     Flow:
-      1. Try saved cookies (headless DrissionPage).
+      1. Try saved cookies (non-headless DrissionPage).
       2. On expiry/miss: automated visual-guided login (up to max_attempts).
       3. All attempts fail → raise FidelityAuthError → manual fidelity-setup.
     """
     # ── 1. Try saved session cookies ──────────────────────────────────────────
+    # Headless mode is intentionally NOT used here. Akamai's bot detection blocks
+    # headless Chrome at the Fidelity domain, causing _is_authenticated() to always
+    # return False and fall through to the full 3-minute login. Non-headless Chrome
+    # passes the bot check and can validate/reuse cookies (~30s vs ~3min).
     page = None
     try:
-        page = _make_driver(headless=True)
+        page = _make_driver(headless=False)
         had_cookies = _load_cookies(page, creds_prefix)
         if had_cookies:
             logger.info("[fidelity] Testing saved session cookies…")
