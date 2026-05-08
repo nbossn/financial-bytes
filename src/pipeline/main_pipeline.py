@@ -93,6 +93,20 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         logger.warning(f"Portfolio '{portfolio_name}' not found in config, using default CSV")
         return settings.portfolio_csv_path, False
 
+    def _apply_max_positions(holdings: list, pdef) -> list:
+        """If pdef.max_positions is set, keep only top-N by total cost basis value."""
+        import csv as _csv
+        if pdef.max_positions and len(holdings) > pdef.max_positions:
+            from decimal import Decimal
+            top = sorted(holdings, key=lambda h: h.shares * h.cost_basis, reverse=True)
+            top = top[: pdef.max_positions]
+            logger.info(
+                f"  max_positions={pdef.max_positions}: keeping top {len(top)} of "
+                f"{len(holdings)} holdings by value for {pdef.name}"
+            )
+            return top
+        return holdings
+
     # ── Plaid (live, preferred when configured) ──────────────────────
     if pdef.plaid_access_token_env:
         import os
@@ -103,6 +117,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
                 from src.portfolio.transaction_reader import export_holdings_to_csv
                 logger.info(f"[plaid] Loading live holdings for {portfolio_name}...")
                 holdings = read_plaid_holdings(portfolio_name)
+                holdings = _apply_max_positions(holdings, pdef)
                 with tempfile.NamedTemporaryFile(
                     mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
                 ) as tmp:
@@ -130,6 +145,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
                     account_filter=pdef.fidelity_account_filter,
                     headless=True,
                 )
+                holdings = _apply_max_positions(holdings, pdef)
                 with tempfile.NamedTemporaryFile(
                     mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
                 ) as tmp:
@@ -150,6 +166,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         holdings = read_fidelity_positions(
             pdef.fidelity_positions, account_filter=pdef.fidelity_account_filter
         )
+        holdings = _apply_max_positions(holdings, pdef)
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".csv", delete=False, prefix="fb_portfolio_"
         ) as tmp:
