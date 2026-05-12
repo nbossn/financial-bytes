@@ -767,12 +767,15 @@ def suggest_stops(portfolio: str, atr_multiplier: float, update_csv: bool) -> No
               help="Compute only; skip Discord alert")
 @click.option("--max-hold-rows", type=int, default=20, show_default=True,
               help="Max HOLD rows to display (non-actionable positions)")
+@click.option("--phase", type=click.Choice(["1", "2", "3"]), default="3", show_default=True,
+              help="Max phase to run: 1=tax floor only, 2=+ATR/concentration, 3=+momentum")
 def tax_aware_stops(
     portfolio_name: str,
     bracket: str | None,
     no_niit: bool,
     no_alert: bool,
     max_hold_rows: int,
+    phase: str,
 ) -> None:
     """Compute tax-aware exit thresholds for every portfolio position.
 
@@ -861,11 +864,14 @@ def tax_aware_stops(
         lot_overrides=lot_overrides,
     )
 
-    click.echo("Computing tax-aware thresholds…\n")
+    phase_int = int(phase)
+    click.echo(f"Computing tax-aware thresholds (phase {phase_int})…\n")
     stops = compute_tax_aware_stops(
         snapshot,
         bracket=use_bracket,
         niit=use_niit,
+        run_phase2=(phase_int >= 2),
+        run_phase3=(phase_int >= 3),
     )
 
     table = format_tax_aware_table(stops, max_rows=max_hold_rows)

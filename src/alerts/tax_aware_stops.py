@@ -1,11 +1,20 @@
-"""Tax-aware stop-loss engine — Phase 1: tax floor + wash-sale.
+"""Tax-aware stop-loss engine — Phases 1–3.
 
 Computes per-position exit thresholds derived from first principles:
-  - After-tax breakeven floor (when does selling stop making financial sense?)
-  - Short-term → long-term conversion penalty (don't fire 30 days before LTCG)
-  - Harvest priority short-circuit (loss positions → HARVEST if wash-sale clear)
 
-Phase 2 will layer in ATR volatility, concentration, and momentum overlays.
+  Phase 1 — Tax floor + wash-sale
+    - After-tax breakeven floor (when does selling stop making financial sense?)
+    - Short-term → long-term conversion penalty (don't fire 30 days before LTCG)
+    - Harvest priority short-circuit (loss positions → HARVEST if wash-sale clear)
+
+  Phase 2 — ATR volatility + concentration overlays
+    - ATR-based volatility floor (from existing dynamic_stops engine)
+    - Concentration factor: tighter stops for outsized positions (>5% / >10% of portfolio)
+    - Final threshold = max(tax_floor, atr_floor × concentration_factor)
+
+  Phase 3 — Momentum signal
+    - 50-DMA filter: tighten by 15% when price below 50-DMA for 3+ consecutive days
+    - Final threshold = max(tax_floor, atr_floor × concentration_factor × momentum_factor)
 
 Usage:
     from src.alerts.tax_aware_stops import compute_tax_aware_stops, format_tax_aware_table
@@ -52,7 +61,7 @@ TaxAction = Literal["HOLD", "WATCH", "HARVEST", "EXIT_TAX_DRAG_LOW", "EXIT_LTCG"
 
 @dataclass
 class TaxAwareStop:
-    """Per-position tax-aware stop-loss result (Phase 1: tax floor only)."""
+    """Per-position tax-aware stop-loss result (Phases 1–3)."""
 
     ticker: str
     shares: Decimal
@@ -72,14 +81,26 @@ class TaxAwareStop:
     tax_rate_low: Decimal
     tax_rate_high: Decimal
 
-    # Core math
+    # Phase 1: tax floor math
     after_tax_gain_per_share: Decimal  # gain × (1 − high_rate); 0 if loss
     breakeven_decline_pct: Decimal     # -(after_tax_gain / current_price) × 100; 0 if loss
     st_penalty_factor: Decimal         # 1.0 → 1.5 for short-term near LTCG conversion
+    tax_floor_pct: Decimal             # breakeven_decline_pct × st_penalty_factor
 
-    # Final threshold (Phase 1: tax floor only)
+    # Phase 2: ATR + concentration (None = not computed / unavailable)
+    atr_pct: float | None              # ATR14 as fraction of price (e.g. 0.025 = 2.5%)
+    atr_threshold_pct: Decimal | None  # raw ATR-based threshold (negative %)
+    pct_of_portfolio: Decimal          # this position as % of total portfolio value
+    concentration_factor: Decimal      # 0.70 / 0.85 / 1.00 based on pct_of_portfolio
+
+    # Phase 3: momentum
+    momentum_flag: bool                # True if below 50-DMA for 3+ consecutive days
+    momentum_factor: Decimal           # 0.85 if flag, 1.00 otherwise
+
+    # Final threshold (composite of all active phases)
     final_threshold_pct: Decimal       # negative %, e.g. -38.5 means -38.5% from current
     final_threshold_price: Decimal
+    phases_applied: list[int]          # e.g. [1, 2, 3]
 
     # Harvest
     harvest_candidate: bool
@@ -102,6 +123,13 @@ class TaxAwareStop:
         if self.holding_period == "short_term":
             return f"{float(self.tax_rate_high)*100:.0f}% ST"
         return f"{float(self.tax_rate_low)*100:.0f}%–{float(self.tax_rate_high)*100:.0f}%"
+
+    @property
+    def vol_floor_pct(self) -> Decimal | None:
+        """ATR floor after concentration + momentum adjustments. None if ATR unavailable."""
+        if self.atr_threshold_pct is None:
+            return None
+        return self.atr_threshold_pct * self.concentration_factor * self.momentum_factor
 
 
 # ── Core computation ─────────────────────────────────────────────────────────
@@ -136,16 +164,34 @@ def compute_tax_aware_stop(
     niit: bool = True,
     as_of: date | None = None,
     ledger_path=None,
+    # Phase 2 inputs (pass pre-computed to avoid per-position yfinance calls)
+    atr_pct: float | None = None,
+    atr_threshold_pct: Decimal | None = None,
+    pct_of_portfolio: Decimal = Decimal("0"),
+    concentration_factor: Decimal = Decimal("1"),
+    # Phase 3 inputs
+    momentum_flag: bool = False,
+    momentum_factor: Decimal = Decimal("1"),
 ) -> TaxAwareStop:
     """Compute a single TaxAwareStop for one holding.
 
+    Phase 2+3 inputs (atr_threshold_pct, concentration_factor, momentum_factor)
+    are pre-computed by the batch runner and passed in here. When not provided,
+    the engine falls back to Phase 1 (tax floor only).
+
     Args:
-        holding:       The position (ticker, shares, cost_basis, purchase_date).
-        current_price: Live price for this ticker.
-        bracket:       Tax bracket: "high" | "mid" | "low"
-        niit:          Apply 3.8% NIIT to long-term gains.
-        as_of:         Reference date (defaults to today).
-        ledger_path:   Override for wash-sale ledger path.
+        holding:              The position (ticker, shares, cost_basis, purchase_date).
+        current_price:        Live price for this ticker.
+        bracket:              Tax bracket: "high" | "mid" | "low" | "trust"
+        niit:                 Apply 3.8% NIIT to long-term gains.
+        as_of:                Reference date (defaults to today).
+        ledger_path:          Override for wash-sale ledger path.
+        atr_pct:              ATR14 as fraction of price (Phase 2).
+        atr_threshold_pct:    ATR-based threshold, negative Decimal (Phase 2).
+        pct_of_portfolio:     Position weight as % of total portfolio (Phase 2).
+        concentration_factor: Stop tightening factor from concentration (Phase 2).
+        momentum_flag:        True if below 50-DMA for 3+ consecutive days (Phase 3).
+        momentum_factor:      Stop tightening factor from momentum (Phase 3).
 
     Returns:
         TaxAwareStop with action, threshold, and rationale.
@@ -167,6 +213,15 @@ def compute_tax_aware_stop(
     wash_blocked, wash_days_left = is_wash_sale_blocked(ticker, check_date=as_of_date, ledger_path=ledger_path)
 
     rationale: list[str] = []
+
+    # ── Determine which phases are active ───────────────────────────────────
+    phases: list[int] = [1]
+    if atr_threshold_pct is not None:
+        phases.append(2)
+    if momentum_flag or momentum_factor != Decimal("1"):
+        if 2 not in phases:
+            phases.append(2)
+        phases.append(3)
 
     # ── HARVEST short-circuit ────────────────────────────────────────────────
     if total_gain < 0:
@@ -199,8 +254,16 @@ def compute_tax_aware_stop(
             after_tax_gain_per_share=Decimal(0),
             breakeven_decline_pct=Decimal(0),
             st_penalty_factor=Decimal("1"),
+            tax_floor_pct=Decimal(0),
+            atr_pct=atr_pct,
+            atr_threshold_pct=atr_threshold_pct,
+            pct_of_portfolio=pct_of_portfolio,
+            concentration_factor=concentration_factor,
+            momentum_flag=momentum_flag,
+            momentum_factor=momentum_factor,
             final_threshold_pct=Decimal(0),
             final_threshold_price=holding.cost_basis,
+            phases_applied=phases,
             harvest_candidate=True,
             harvest_opportunity_dollars=harvest_opp,
             wash_sale_blocked=wash_blocked,
@@ -209,19 +272,29 @@ def compute_tax_aware_stop(
             rationale=rationale,
         )
 
-    # ── Gain position: compute tax floor ────────────────────────────────────
+    # ── Gain position: Phase 1 tax floor ────────────────────────────────────
     after_tax_gain_ps = gain_per_share * (Decimal("1") - rate_high)
-    # How far can price fall before after-tax gains = 0?
-    # threshold_price = current_price - after_tax_gain_ps
-    # breakeven_pct   = -(after_tax_gain_ps / current_price) × 100
     if current_price > 0:
         breakeven_decline_pct = -(after_tax_gain_ps / current_price) * 100
     else:
         breakeven_decline_pct = Decimal(0)
 
-    # ST → LT penalty: widen threshold if close to conversion
     st_penalty = _compute_st_penalty(days_to_ltcg)
-    final_threshold_pct = breakeven_decline_pct * st_penalty
+    tax_floor_pct = breakeven_decline_pct * st_penalty
+
+    # ── Phase 2+3: volatility floor ──────────────────────────────────────────
+    vol_floor_pct: Decimal | None = None
+    if atr_threshold_pct is not None:
+        # Both are negative — max() picks the less-negative (tighter / fires sooner)
+        vol_floor_pct = atr_threshold_pct * concentration_factor * momentum_factor
+
+    # ── Compose final threshold ──────────────────────────────────────────────
+    if vol_floor_pct is not None:
+        # max() of two negatives = less negative = tighter stop
+        final_threshold_pct = max(tax_floor_pct, vol_floor_pct)
+    else:
+        final_threshold_pct = tax_floor_pct
+
     final_threshold_price = current_price * (1 + final_threshold_pct / 100)
 
     # ── Action classification ────────────────────────────────────────────────
@@ -230,7 +303,7 @@ def compute_tax_aware_stop(
         rationale.append(
             f"Short-term position: {days_to_ltcg}d until LTCG conversion. "
             f"Do not sell — waiting saves "
-            f"~{float((rate_high - rate_low) * total_gain):,.0f} in tax."
+            f"~${float((rate_high - rate_low) * total_gain):,.0f} in tax."
         )
     elif gain_pct < MIN_GAIN_PCT_FOR_FLOOR:
         action = "WATCH"
@@ -242,23 +315,40 @@ def compute_tax_aware_stop(
         action = "HOLD"
         rationale.append(
             f"Long-term position (+{float(gain_pct):.1f}%). "
-            f"Tax floor: price can fall {float(breakeven_decline_pct):.1f}% "
-            f"(to ${float(final_threshold_price):.2f}) before after-tax gains erode. "
-            f"Tax rate: {float(rate_high)*100:.1f}% LTCG."
+            f"Tax floor: {float(tax_floor_pct):.1f}% (${float(current_price * (1 + tax_floor_pct/100)):.2f}). "
+            f"Tax rate: {float(rate_high)*100:.1f}%."
         )
     else:
         action = "HOLD"
-        period_note = "unknown holding period" if period == "unknown" else f"{period.replace('_', '-')} position"
+        period_note = "Unknown holding period" if period == "unknown" else f"{period.replace('_', '-').capitalize()} position"
         rationale.append(
-            f"{period_note.capitalize()} (+{float(gain_pct):.1f}%). "
-            f"Tax floor: ${float(final_threshold_price):.2f} "
-            f"({float(final_threshold_pct):.1f}% from current, {float(rate_high)*100:.0f}% rate)."
+            f"{period_note} (+{float(gain_pct):.1f}%). "
+            f"Tax floor: ${float(current_price * (1 + tax_floor_pct/100)):.2f} "
+            f"({float(tax_floor_pct):.1f}%, {float(rate_high)*100:.0f}% rate)."
         )
 
     if st_penalty > 1:
         rationale.append(
             f"ST→LT penalty ({float(st_penalty):.2f}×): threshold widened — "
             f"{days_to_ltcg}d until LTCG conversion."
+        )
+
+    if vol_floor_pct is not None and vol_floor_pct > tax_floor_pct:
+        rationale.append(
+            f"Volatility floor ({float(vol_floor_pct):.1f}%) tighter than tax floor "
+            f"({float(tax_floor_pct):.1f}%) — ATR governs."
+        )
+        if concentration_factor < Decimal("1"):
+            rationale.append(
+                f"Concentration overlay ({float(pct_of_portfolio):.1f}% of portfolio → "
+                f"{float(concentration_factor):.2f}× tighter)."
+            )
+        if momentum_flag:
+            rationale.append("Momentum flag: price below 50-DMA for 3+ consecutive days → 15% tighter.")
+    elif vol_floor_pct is not None:
+        rationale.append(
+            f"Tax floor ({float(tax_floor_pct):.1f}%) governs (wider than ATR floor "
+            f"{float(vol_floor_pct):.1f}%)."
         )
 
     return TaxAwareStop(
@@ -276,8 +366,16 @@ def compute_tax_aware_stop(
         after_tax_gain_per_share=after_tax_gain_ps,
         breakeven_decline_pct=breakeven_decline_pct,
         st_penalty_factor=st_penalty,
+        tax_floor_pct=tax_floor_pct,
+        atr_pct=atr_pct,
+        atr_threshold_pct=atr_threshold_pct,
+        pct_of_portfolio=pct_of_portfolio,
+        concentration_factor=concentration_factor,
+        momentum_flag=momentum_flag,
+        momentum_factor=momentum_factor,
         final_threshold_pct=final_threshold_pct,
         final_threshold_price=final_threshold_price,
+        phases_applied=phases,
         harvest_candidate=False,
         harvest_opportunity_dollars=Decimal(0),
         wash_sale_blocked=False,
@@ -293,33 +391,91 @@ def compute_tax_aware_stops(
     niit: bool = True,
     as_of: date | None = None,
     ledger_path=None,
+    run_phase2: bool = True,
+    run_phase3: bool = True,
 ) -> list[TaxAwareStop]:
     """Compute tax-aware stops for all holdings in a snapshot.
 
+    Runs all available phases by default. Phase 2 (ATR + concentration) and
+    Phase 3 (momentum) require yfinance network calls — set run_phase2=False
+    to skip for speed (falls back to Phase 1 tax floor only).
+
     Args:
         snapshot:    Portfolio snapshot with holdings and current prices.
-        bracket:     Tax bracket: "high" | "mid" | "low"
+        bracket:     Tax bracket: "high" | "mid" | "low" | "trust"
         niit:        Apply 3.8% NIIT to long-term gains.
         as_of:       Reference date for holding period classification.
         ledger_path: Override for wash-sale ledger.
+        run_phase2:  Compute ATR + concentration overlays (default True).
+        run_phase3:  Compute momentum signals (default True, requires run_phase2).
 
     Returns:
-        List of TaxAwareStop, sorted: HARVEST → WATCH → HOLD.
+        List of TaxAwareStop, sorted: HARVEST → EXIT → WATCH → HOLD.
     """
+    from src.alerts.concentration import compute_concentration
+
     stops: list[TaxAwareStop] = []
     skipped = 0
 
-    for holding in snapshot.holdings:
-        # Skip money market / cash equivalents
-        if holding.cost_basis <= Decimal("1.01") and holding.shares > Decimal("1000"):
-            skipped += 1
-            continue
+    # Filter to equity holdings only (skip money market / cash equivalents)
+    equity_holdings = [
+        h for h in snapshot.holdings
+        if not (h.cost_basis <= Decimal("1.01") and h.shares > Decimal("1000"))
+    ]
+    skipped += len(snapshot.holdings) - len(equity_holdings)
 
+    if not equity_holdings:
+        logger.info("tax_aware_stops: no equity holdings found")
+        return []
+
+    # ── Phase 2 prep: concentration + ATR ───────────────────────────────────
+    concentration_map: dict[str, tuple[Decimal, Decimal]] = {}
+    atr_map:           dict[str, tuple[float | None, Decimal | None]] = {}
+    momentum_map:      dict[str, tuple[bool, Decimal]] = {}
+
+    if run_phase2:
+        logger.info("tax_aware_stops: computing concentration weights…")
+        concentration_map = compute_concentration(equity_holdings, snapshot.prices)
+
+        tickers_with_price = [
+            h.ticker for h in equity_holdings if h.ticker in snapshot.prices
+        ]
+        logger.info(f"tax_aware_stops: fetching ATR for {len(tickers_with_price)} tickers…")
+        from src.alerts.dynamic_stops import compute_dynamic_stop
+        for ticker in tickers_with_price:
+            try:
+                ds = compute_dynamic_stop(ticker)
+                # dynamic_pct is a fraction (e.g. -0.115 = -11.5%).
+                # Convert to percentage units to match tax_floor_pct convention.
+                atr_thresh_pct = (
+                    Decimal(str(round(ds.dynamic_pct * 100, 4)))
+                    if ds.dynamic_pct else None
+                )
+                atr_map[ticker] = (ds.atr_pct, atr_thresh_pct)
+            except Exception as e:
+                logger.debug(f"ATR failed for {ticker}: {e}")
+                atr_map[ticker] = (None, None)
+
+    # ── Phase 3 prep: momentum ───────────────────────────────────────────────
+    if run_phase2 and run_phase3:
+        logger.info("tax_aware_stops: computing momentum flags…")
+        from src.alerts.momentum import compute_momentum_flags
+        momentum_map = compute_momentum_flags(tickers_with_price)
+
+    # ── Per-position computation ─────────────────────────────────────────────
+    for holding in equity_holdings:
         price = snapshot.prices.get(holding.ticker)
         if price is None:
             logger.debug(f"tax_aware_stops: no price for {holding.ticker} — skipping")
             skipped += 1
             continue
+
+        # Unpack Phase 2+3 data (fall back to Phase 1 defaults if not available)
+        pct_of_port, conc_factor = concentration_map.get(
+            holding.ticker, (Decimal("0"), Decimal("1"))
+        )
+        atr_pct_val, atr_thresh = atr_map.get(holding.ticker, (None, None))
+        mom_flag, mom_factor = momentum_map.get(holding.ticker, (False, Decimal("1")))
 
         try:
             stop = compute_tax_aware_stop(
@@ -329,6 +485,12 @@ def compute_tax_aware_stops(
                 niit=niit,
                 as_of=as_of,
                 ledger_path=ledger_path,
+                atr_pct=atr_pct_val,
+                atr_threshold_pct=atr_thresh,
+                pct_of_portfolio=pct_of_port,
+                concentration_factor=conc_factor,
+                momentum_flag=mom_flag,
+                momentum_factor=mom_factor,
             )
             stops.append(stop)
         except Exception as e:
@@ -336,14 +498,21 @@ def compute_tax_aware_stops(
             skipped += 1
 
     if skipped:
-        logger.debug(f"tax_aware_stops: skipped {skipped} positions (no price or cash equivalent)")
+        logger.debug(f"tax_aware_stops: skipped {skipped} positions")
 
-    # Sort: HARVEST first, then WATCH, then HOLD
+    # Sort: HARVEST → EXIT → WATCH → HOLD; within same action by gain magnitude
     _order = {"HARVEST": 0, "EXIT_TAX_DRAG_LOW": 1, "EXIT_LTCG": 2, "WATCH": 3, "HOLD": 4}
     stops.sort(key=lambda s: (_order.get(s.action, 5), -abs(float(s.unrealized_gain_dollars))))
 
+    # Mark Phase 3 on all positions when it was computed (even if no flags triggered)
+    if run_phase2 and run_phase3:
+        for s in stops:
+            if 2 in s.phases_applied and 3 not in s.phases_applied:
+                s.phases_applied.append(3)
+
+    phases_str = ",".join(str(p) for p in sorted({p for s in stops for p in s.phases_applied}))
     logger.info(
-        f"tax_aware_stops: computed {len(stops)} positions — "
+        f"tax_aware_stops: {len(stops)} positions (phases {phases_str}) — "
         f"{sum(1 for s in stops if s.action == 'HARVEST')} HARVEST, "
         f"{sum(1 for s in stops if s.action == 'WATCH')} WATCH, "
         f"{sum(1 for s in stops if s.action in ('EXIT_TAX_DRAG_LOW', 'EXIT_LTCG'))} EXIT, "
@@ -378,17 +547,30 @@ def format_tax_aware_table(stops: list[TaxAwareStop], max_rows: int = 50) -> str
             "unknown":    "??",
         }.get(s.holding_period, "??")
 
-        thresh = (
-            f"{float(s.final_threshold_pct):.1f}% → ${float(s.final_threshold_price):.2f}"
-            if s.action not in ("HARVEST",)
-            else "HARVEST NOW"
-        )
+        if s.action == "HARVEST":
+            thresh = "HARVEST NOW"
+        else:
+            thresh = f"{float(s.final_threshold_pct):.1f}% → ${float(s.final_threshold_price):.2f}"
+
+        # Show both tax floor and vol floor when Phase 2+ was run
+        floor_detail = ""
+        if s.atr_threshold_pct is not None:
+            vf = s.vol_floor_pct
+            floor_detail = (
+                f"  [tax:{float(s.tax_floor_pct):.1f}%"
+                f" atr:{float(s.atr_threshold_pct):.1f}%"
+                + (f" conc:{float(s.concentration_factor):.2f}×" if s.concentration_factor < Decimal("1") else "")
+                + (f" 📉mom" if s.momentum_flag else "")
+                + f" → final:{float(s.final_threshold_pct):.1f}%]"
+            )
 
         harvest_note = (
             f"  save ~${float(s.harvest_opportunity_dollars):,.0f}"
             if s.action == "HARVEST"
             else ""
         )
+
+        conc_note = f" {float(s.pct_of_portfolio):.1f}%port" if s.pct_of_portfolio > 0 else ""
 
         action_display = {
             "HARVEST": "🟢 HARVEST",
@@ -403,7 +585,7 @@ def format_tax_aware_table(stops: list[TaxAwareStop], max_rows: int = 50) -> str
             f"{gain_sign}{float(s.unrealized_gain_pct):>6.1f}%  "
             f"{s.tax_rate_label:<14} "
             f"{thresh:<32} "
-            f"{action_display}{harvest_note}"
+            f"{action_display}{harvest_note}{conc_note}{floor_detail}"
         )
 
     header = (
@@ -454,7 +636,11 @@ def format_tax_aware_table(stops: list[TaxAwareStop], max_rows: int = 50) -> str
             f"  Wash-sale blocked: {', '.join(s.ticker for s in blocked_harvest)} "
             f"(harvest eligible after window clears)"
         )
-    lines.append("  Note: thresholds are tax-floor estimates (Phase 1). ATR/momentum overlays in Phase 2.")
+    phases_used = sorted({p for s in stops for p in s.phases_applied})
+    phase_label = f"Phases applied: {', '.join(str(p) for p in phases_used)}"
+    lines.append(f"  {phase_label}")
+    if max(phases_used) < 3:
+        lines.append("  Note: run with --phase 3 (default) for full ATR + momentum overlays.")
     lines.append("═" * 105)
 
     return "\n".join(lines)
