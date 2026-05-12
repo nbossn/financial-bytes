@@ -9,7 +9,7 @@ from typing import Literal
 from src.portfolio.models import PortfolioSnapshot
 
 HoldingPeriod = Literal["short_term", "long_term", "unknown"]
-TaxBracket = Literal["high", "mid", "low"]
+TaxBracket = Literal["high", "mid", "low", "trust"]
 
 # US capital gains tax rate ranges (2025/2026 brackets)
 SHORT_TERM_LOW = Decimal("0.22")   # ordinary income — 22% bracket
@@ -20,6 +20,8 @@ LONG_TERM_HIGH = Decimal("0.20")   # long-term LTCG high-earner rate
 NIIT_RATE = Decimal("0.038")  # Net Investment Income Tax (>$200K single / $250K married)
 
 # Per-bracket rate table: bracket → period → (low, high)
+# Trust brackets (2026): 37% ordinary income at ~$15,950; 20% LTCG at ~$3,150.
+# Trusts hit top rates at very low income thresholds, so conservative = effective.
 _BRACKET_RATES: dict[str, dict[str, tuple[Decimal, Decimal]]] = {
     "high": {
         "short_term": (Decimal("0.32"), Decimal("0.37")),
@@ -35,6 +37,14 @@ _BRACKET_RATES: dict[str, dict[str, tuple[Decimal, Decimal]]] = {
         "short_term": (Decimal("0.10"), Decimal("0.22")),
         "long_term":  (Decimal("0.00"), Decimal("0.15")),
         "unknown":    (Decimal("0.00"), Decimal("0.22")),
+    },
+    # Trust: compressed brackets — effectively always at top rates.
+    # NIIT for trusts applies at ~$15,950 threshold (vs $200K individual).
+    # Nearly all trust investment income triggers NIIT — treat as always-on.
+    "trust": {
+        "short_term": (Decimal("0.37"), Decimal("0.37")),   # always top ordinary rate
+        "long_term":  (Decimal("0.20"), Decimal("0.20")),   # LTCG top rate (NIIT added separately)
+        "unknown":    (Decimal("0.20"), Decimal("0.37")),   # full range
     },
 }
 

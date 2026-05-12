@@ -88,6 +88,18 @@ class TestEffectiveTaxRate:
         low, high = effective_tax_rate("long_term", bracket="billionaire", niit=False)
         assert high == Decimal("0.20")  # high bracket long-term
 
+    def test_trust_bracket_always_top_rate(self):
+        """Trust short-term rate is always 37% (compressed brackets)."""
+        low, high = effective_tax_rate("short_term", bracket="trust", niit=False)
+        assert low  == Decimal("0.37")
+        assert high == Decimal("0.37")
+
+    def test_trust_bracket_lt_with_niit(self):
+        """Trust long-term + NIIT = 20% + 3.8% = 23.8%."""
+        low, high = effective_tax_rate("long_term", bracket="trust", niit=True)
+        assert low  == Decimal("0.20") + NIIT_RATE
+        assert high == Decimal("0.20") + NIIT_RATE
+
     def test_niit_only_applies_to_lt_not_st(self):
         low_niit, high_niit = effective_tax_rate("short_term", bracket="high", niit=True)
         low_no,   high_no   = effective_tax_rate("short_term", bracket="high", niit=False)
