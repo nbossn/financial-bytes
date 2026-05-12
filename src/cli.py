@@ -753,6 +753,144 @@ def suggest_stops(portfolio: str, atr_multiplier: float, update_csv: bool) -> No
         click.echo("   Review changes before running check-stops — thresholds are now dynamic.")
 
 
+# ── tax-aware stops ──────────────────────────────────────────────
+@cli.command("tax-aware-stops")
+@click.option("--portfolio-name", default="nbossn_fidelity", show_default=True,
+              help="Portfolio identifier from portfolios.json")
+@click.option("--bracket",
+              type=click.Choice(["high", "mid", "low"], case_sensitive=False),
+              default=None,
+              help="Override tax bracket (default: from portfolio config)")
+@click.option("--no-niit", is_flag=True,
+              help="Disable 3.8% NIIT (overrides portfolio config)")
+@click.option("--no-alert", is_flag=True,
+              help="Compute only; skip Discord alert")
+@click.option("--max-hold-rows", type=int, default=20, show_default=True,
+              help="Max HOLD rows to display (non-actionable positions)")
+def tax_aware_stops(
+    portfolio_name: str,
+    bracket: str | None,
+    no_niit: bool,
+    no_alert: bool,
+    max_hold_rows: int,
+) -> None:
+    """Compute tax-aware exit thresholds for every portfolio position.
+
+    Goes beyond flat stop-loss percentages: calculates the price floor below
+    which selling actually makes financial sense after accounting for capital
+    gains tax, short-term vs long-term treatment, wash-sale rules, and the
+    ST → LT conversion penalty.
+
+    \b
+    Actions:
+      HARVEST   — loss position, wash-sale clear → crystallize for tax savings
+      EXIT      — price below after-tax breakeven floor
+      WATCH     — approaching floor or near-zero gain position
+      HOLD      — within tax floor, no action needed
+
+    \b
+    Phase 1 (current): tax floor + wash-sale gate.
+    Phase 2 adds:      ATR volatility + concentration overlays.
+    Phase 3 adds:      Momentum + news signals + newsletter integration.
+    """
+    import tempfile
+    from decimal import Decimal
+    from pathlib import Path
+
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.reader import read_portfolio
+    from src.portfolio.models import PortfolioSnapshot
+    from src.alerts.stop_loss import _fetch_prices
+    from src.alerts.tax_aware_stops import (
+        compute_tax_aware_stops,
+        format_tax_aware_table,
+        format_tax_aware_discord,
+    )
+    from src.pipeline.main_pipeline import (
+        _resolve_portfolio_csv,
+        _load_purchase_history,
+        _apply_purchase_history_to_holdings,
+    )
+
+    click.echo(f"Loading portfolio: {portfolio_name}…")
+
+    # Resolve portfolio def for tax settings
+    try:
+        pdef = get_portfolio_config(portfolio_name)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+    use_bracket = bracket or pdef.tax_bracket
+    use_niit    = False if no_niit else pdef.niit
+
+    click.echo(
+        f"Tax settings: bracket={use_bracket}, NIIT={'yes' if use_niit else 'no'}"
+    )
+
+    # Load holdings via the same pipeline logic (live scraper → CSV fallback)
+    csv_path_str, is_temp = _resolve_portfolio_csv(portfolio_name)
+    try:
+        holdings = read_portfolio(csv_path_str)
+    finally:
+        if is_temp:
+            try:
+                Path(csv_path_str).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if not holdings:
+        click.echo("No holdings found.")
+        return
+
+    # Apply purchase history for accurate ST/LT classification
+    lot_overrides = _load_purchase_history(portfolio_name)
+    _apply_purchase_history_to_holdings(holdings, lot_overrides)
+
+    click.echo(f"Fetching prices for {len(holdings)} positions…")
+    tickers = [h.ticker for h in holdings]
+    prices = _fetch_prices(tickers)
+
+    missing = [t for t in tickers if t not in prices]
+    if missing:
+        click.echo(f"  ⚠️  No price data for {len(missing)} tickers: {', '.join(missing[:10])}"
+                   + (" …" if len(missing) > 10 else ""))
+
+    snapshot = PortfolioSnapshot(
+        holdings=holdings,
+        prices=prices,
+        lot_overrides=lot_overrides,
+    )
+
+    click.echo("Computing tax-aware thresholds…\n")
+    stops = compute_tax_aware_stops(
+        snapshot,
+        bracket=use_bracket,
+        niit=use_niit,
+    )
+
+    table = format_tax_aware_table(stops, max_rows=max_hold_rows)
+    click.echo(table)
+
+    # Discord alert for HARVEST / EXIT positions (unless --no-alert)
+    if not no_alert:
+        actionable = [s for s in stops if s.action in ("HARVEST", "EXIT_TAX_DRAG_LOW", "EXIT_LTCG")]
+        if actionable:
+            import os, requests as _req
+            webhook = os.getenv("DISCORD_WEBHOOK_URL")
+            if webhook:
+                msg = format_tax_aware_discord(stops, portfolio_name)
+                try:
+                    resp = _req.post(webhook, json={"content": msg}, timeout=10)
+                    resp.raise_for_status()
+                    click.echo(f"\n📣 Discord alert sent ({len(actionable)} actionable positions)")
+                except Exception as e:
+                    click.echo(f"\n⚠️  Discord alert failed: {e}")
+            else:
+                click.echo("\n⚠️  DISCORD_WEBHOOK_URL not set — skipping alert")
+        else:
+            click.echo("\n✅ No immediate actions — Discord alert skipped")
+
+
 # ── dividend check ────────────────────────────────────────────────
 @cli.command("check-dividends")
 @click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
@@ -923,6 +1061,50 @@ document.getElementById("link-btn").onclick = function() {{ handler.open(); }};
         click.echo("\n⚠️  Setup did not complete — no token received.", err=True)
 
 
+# ── fidelity-setup ────────────────────────────────────────────────
+@cli.command("fidelity-setup")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name (e.g. nbossn_fidelity, lilich)")
+@click.option("--timeout", default=300, show_default=True,
+              help="Seconds to wait for manual login")
+def fidelity_setup(portfolio: str, timeout: int) -> None:
+    """Establish a Fidelity session by logging in manually (one-time setup).
+
+    Opens a Chrome window and waits for you to log in to Fidelity. Once the
+    portfolio page is detected, session cookies are saved automatically and
+    reused by fidelity-sync for ~7 days — no further interaction needed.
+
+    Run this once per portfolio. Re-run when cookies expire (~7 days).
+
+    \b
+    Examples:
+      financial-bytes fidelity-setup --portfolio nbossn_fidelity
+      financial-bytes fidelity-setup --portfolio lilich
+    """
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.fidelity_scraper import (
+        setup_fidelity_cookies, FidelityScraperError
+    )
+
+    try:
+        config = get_portfolio_config(portfolio)
+    except Exception as e:
+        raise click.UsageError(f"Unknown portfolio '{portfolio}': {e}")
+
+    creds_prefix = getattr(config, "fidelity_creds_prefix", "") or ""
+
+    click.echo(f"\n🔐 Fidelity session setup for: {portfolio}")
+    if creds_prefix:
+        click.echo(f"   Credentials prefix: FIDELITY_{creds_prefix.upper()}_*")
+
+    try:
+        setup_fidelity_cookies(creds_prefix=creds_prefix, timeout_secs=timeout)
+        click.echo("\n✅ Done. Run fidelity-sync now to test:")
+        click.echo(f"   financial-bytes fidelity-sync --portfolio {portfolio} --dry-run")
+    except FidelityScraperError as e:
+        raise click.UsageError(str(e))
+
+
 # ── fidelity-sync ─────────────────────────────────────────────────
 @cli.command("fidelity-sync")
 @click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
@@ -940,6 +1122,11 @@ def fidelity_sync(portfolio: str, output: str | None, no_headless: bool, dry_run
 
     Works for all account types: brokerage, IRA, trust (lilich), 401k.
 
+    Login is fully automated: credentials + TOTP codes are generated from .env.
+    Saved session cookies are reused to avoid logging in on every run (~7 day TTL).
+    If Akamai rate-limits a login attempt, the scraper backs off exponentially
+    (30s → 60s → 120s → 240s) and retries automatically — no manual action needed.
+
     \b
     Prerequisites (add to .env):
       FIDELITY_USERNAME       — your Fidelity username
@@ -951,7 +1138,7 @@ def fidelity_sync(portfolio: str, output: str | None, no_headless: bool, dry_run
       FIDELITY_LILICH_USERNAME / FIDELITY_LILICH_PASSWORD / FIDELITY_LILICH_2FA_SECRET
     And set "fidelity_creds_prefix": "LILICH" in portfolios.json.
 
-    Use --no-headless to see the browser window and handle 2FA interactively.
+    Use --no-headless to see the browser window for debugging.
     """
     from src.portfolio.portfolio_config import get_portfolio_config
     from src.portfolio.fidelity_scraper import (

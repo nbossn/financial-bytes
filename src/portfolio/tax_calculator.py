@@ -9,12 +9,62 @@ from typing import Literal
 from src.portfolio.models import PortfolioSnapshot
 
 HoldingPeriod = Literal["short_term", "long_term", "unknown"]
+TaxBracket = Literal["high", "mid", "low"]
 
 # US capital gains tax rate ranges (2025/2026 brackets)
 SHORT_TERM_LOW = Decimal("0.22")   # ordinary income — 22% bracket
 SHORT_TERM_HIGH = Decimal("0.37")  # ordinary income — top bracket
 LONG_TERM_LOW = Decimal("0.15")    # long-term LTCG standard rate
 LONG_TERM_HIGH = Decimal("0.20")   # long-term LTCG high-earner rate
+
+NIIT_RATE = Decimal("0.038")  # Net Investment Income Tax (>$200K single / $250K married)
+
+# Per-bracket rate table: bracket → period → (low, high)
+_BRACKET_RATES: dict[str, dict[str, tuple[Decimal, Decimal]]] = {
+    "high": {
+        "short_term": (Decimal("0.32"), Decimal("0.37")),
+        "long_term":  (Decimal("0.20"), Decimal("0.20")),
+        "unknown":    (Decimal("0.20"), Decimal("0.37")),
+    },
+    "mid": {
+        "short_term": (Decimal("0.22"), Decimal("0.24")),
+        "long_term":  (Decimal("0.15"), Decimal("0.15")),
+        "unknown":    (Decimal("0.15"), Decimal("0.24")),
+    },
+    "low": {
+        "short_term": (Decimal("0.10"), Decimal("0.22")),
+        "long_term":  (Decimal("0.00"), Decimal("0.15")),
+        "unknown":    (Decimal("0.00"), Decimal("0.22")),
+    },
+}
+
+
+def effective_tax_rate(
+    period: HoldingPeriod,
+    bracket: str = "high",
+    niit: bool = False,
+) -> tuple[Decimal, Decimal]:
+    """Return (low_rate, high_rate) for a holding period and tax bracket.
+
+    Args:
+        period:  "short_term", "long_term", or "unknown"
+        bracket: "high" (top earner, 37% ST / 20% LTCG), "mid", or "low"
+        niit:    Apply 3.8% Net Investment Income Tax to long-term / unknown gains.
+
+    Returns:
+        (low_rate, high_rate) as Decimals, e.g. (Decimal("0.20"), Decimal("0.238"))
+    """
+    bracket_key = bracket if bracket in _BRACKET_RATES else "high"
+    period_key = period if period in ("short_term", "long_term") else "unknown"
+
+    low, high = _BRACKET_RATES[bracket_key][period_key]
+
+    if niit and period_key in ("long_term", "unknown"):
+        cap = Decimal("1")
+        low  = min(low  + NIIT_RATE, cap)
+        high = min(high + NIIT_RATE, cap)
+
+    return low, high
 
 
 @dataclass
