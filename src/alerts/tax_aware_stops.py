@@ -1,4 +1,4 @@
-"""Tax-aware stop-loss engine — Phases 1–3.
+"""Tax-aware stop-loss engine — Phases 1–4.
 
 Computes per-position exit thresholds derived from first principles:
 
@@ -15,6 +15,16 @@ Computes per-position exit thresholds derived from first principles:
   Phase 3 — Momentum signal
     - 50-DMA filter: tighten by 15% when price below 50-DMA for 3+ consecutive days
     - Final threshold = max(tax_floor, atr_floor × concentration_factor × momentum_factor)
+
+  Phase 4 — ADX regime gate + 52W proximity + multiplicative CRS amplifier
+    - ADX gate: if ADX < 20 (choppy market), suppress 50-DMA signal to prevent
+      false stop exits during sideways chop (Wilder 1978).
+    - 52-Week high/low proximity: tighten 15% near 52W high (resistance zone),
+      loosen 15% near 52W low (George & Hwang 2004 underreaction effect).
+    - Multiplicative CRS amplifier: when 2+ signals confirm (momentum + 52W high +
+      concentration), apply nonlinear amplifier (AQR ML research: 50-100% Sharpe
+      improvement). Each additional confirming signal adds 5% more tightening.
+    - Final threshold = max(tax_floor, atr_floor × conc × momentum × w52 × crs)
 
 Usage:
     from src.alerts.tax_aware_stops import compute_tax_aware_stops, format_tax_aware_table
@@ -100,7 +110,7 @@ class TaxAwareStop:
     # Final threshold (composite of all active phases)
     final_threshold_pct: Decimal       # negative %, e.g. -38.5 means -38.5% from current
     final_threshold_price: Decimal
-    phases_applied: list[int]          # e.g. [1, 2, 3]
+    phases_applied: list[int]          # e.g. [1, 2, 3, 4]
 
     # Harvest
     harvest_candidate: bool
@@ -111,6 +121,19 @@ class TaxAwareStop:
     # Decision
     action: TaxAction
     rationale: list[str] = field(default_factory=list)
+
+    # Phase 4: ADX regime gate (Wilder 1978)
+    adx: float | None = None
+    adx_regime: str = "unknown"        # "trending" | "weak" | "choppy" | "unknown"
+
+    # Phase 4: 52-Week high/low proximity (George & Hwang 2004)
+    w52_zone: str = "neutral"          # "near_high" | "near_low" | "neutral"
+    w52_proximity_pct: float | None = None   # fraction below 52W high (0 = at high)
+    w52_factor: Decimal = Decimal("1")
+
+    # Phase 4 composite: multiplicative CRS amplifier (AQR ML research)
+    crs_amplifier: Decimal = Decimal("1")    # < 1 when 2+ signals confirm bearish
+    n_confirming_signals: int = 0            # count of active bearish signals (max 3)
 
     @property
     def position_value(self) -> Decimal:
@@ -172,12 +195,23 @@ def compute_tax_aware_stop(
     # Phase 3 inputs
     momentum_flag: bool = False,
     momentum_factor: Decimal = Decimal("1"),
+    # Phase 4 inputs — ADX regime gate, 52W proximity, CRS amplifier
+    adx: float | None = None,
+    adx_regime: str = "unknown",
+    w52_zone: str = "neutral",
+    w52_proximity_pct: float | None = None,
+    w52_factor: Decimal = Decimal("1"),
 ) -> TaxAwareStop:
     """Compute a single TaxAwareStop for one holding.
 
     Phase 2+3 inputs (atr_threshold_pct, concentration_factor, momentum_factor)
     are pre-computed by the batch runner and passed in here. When not provided,
     the engine falls back to Phase 1 (tax floor only).
+
+    Phase 4 inputs (adx_regime, w52_factor) gate and amplify Phases 2+3:
+      - ADX < 20 (choppy): suppress momentum tightening (false signal prevention).
+      - 52W high proximity: additional tightening at resistance (George & Hwang 2004).
+      - Multiplicative CRS: nonlinear amplifier when 2+ signals confirm bearish.
 
     Args:
         holding:              The position (ticker, shares, cost_basis, purchase_date).
@@ -192,6 +226,11 @@ def compute_tax_aware_stop(
         concentration_factor: Stop tightening factor from concentration (Phase 2).
         momentum_flag:        True if below 50-DMA for 3+ consecutive days (Phase 3).
         momentum_factor:      Stop tightening factor from momentum (Phase 3).
+        adx:                  Wilder ADX(14) value (Phase 4).
+        adx_regime:           "trending" | "weak" | "choppy" | "unknown" (Phase 4).
+        w52_zone:             "near_high" | "near_low" | "neutral" (Phase 4).
+        w52_proximity_pct:    Fraction below 52W high, e.g. 0.03 = 3% below (Phase 4).
+        w52_factor:           52W proximity stop multiplier (Phase 4).
 
     Returns:
         TaxAwareStop with action, threshold, and rationale.
@@ -222,6 +261,10 @@ def compute_tax_aware_stop(
         if 2 not in phases:
             phases.append(2)
         phases.append(3)
+    if adx_regime != "unknown" or w52_zone != "neutral" or w52_factor != Decimal("1"):
+        if 2 not in phases:
+            phases.append(2)
+        phases.append(4)
 
     # ── HARVEST short-circuit ────────────────────────────────────────────────
     if total_gain < 0:
@@ -270,6 +313,11 @@ def compute_tax_aware_stop(
             wash_sale_days_remaining=wash_days_left,
             action=action,
             rationale=rationale,
+            adx=adx,
+            adx_regime=adx_regime,
+            w52_zone=w52_zone,
+            w52_proximity_pct=w52_proximity_pct,
+            w52_factor=w52_factor,
         )
 
     # ── Gain position: Phase 1 tax floor ────────────────────────────────────
@@ -282,11 +330,50 @@ def compute_tax_aware_stop(
     st_penalty = _compute_st_penalty(days_to_ltcg)
     tax_floor_pct = breakeven_decline_pct * st_penalty
 
-    # ── Phase 2+3: volatility floor ──────────────────────────────────────────
+    # ── Phase 4a: ADX regime gate — suppress momentum in choppy markets ──────
+    # When ADX < 20 the market is range-bound. The 50-DMA signal fires false
+    # positives as price oscillates around the average. Override momentum_factor
+    # to neutral so we don't tighten a stop during legitimate sideways chop.
+    effective_momentum_flag = momentum_flag
+    effective_momentum_factor = momentum_factor
+    if adx_regime == "choppy":
+        effective_momentum_flag = False
+        effective_momentum_factor = Decimal("1")
+        if momentum_flag:
+            rationale.append(
+                f"ADX={adx:.1f} < 20 (choppy market) — 50-DMA momentum signal "
+                "suppressed to prevent false stop exit during sideways chop."
+            )
+
+    # ── Phase 4b: multiplicative CRS amplifier (AQR ML research) ─────────────
+    # Count bearish signals that are independently confirming:
+    #   1. Momentum: below 50-DMA for 3+ days (and ADX allows it)
+    #   2. 52W proximity: near resistance (within 5% of 52W high)
+    #   3. Concentration: oversized position (concentration_factor < 1.0)
+    n_confirming = sum([
+        1 if effective_momentum_flag else 0,
+        1 if w52_zone == "near_high" else 0,
+        1 if concentration_factor < Decimal("1") else 0,
+    ])
+    # Each additional confirming signal tightens 5% beyond the joint product.
+    # Only activates at 2+ (single signal = no amplification, same as before).
+    if n_confirming >= 2:
+        crs_amplifier = Decimal(str(round(0.95 ** (n_confirming - 1), 4)))
+    else:
+        crs_amplifier = Decimal("1")
+
+    # ── Phase 2+3+4: compose volatility floor ────────────────────────────────
+    # All factors are ≤ 1 for tightening (applied to a negative ATR threshold).
+    # Multiplying negatives by fractions makes them less negative = tighter stop.
     vol_floor_pct: Decimal | None = None
     if atr_threshold_pct is not None:
-        # Both are negative — max() picks the less-negative (tighter / fires sooner)
-        vol_floor_pct = atr_threshold_pct * concentration_factor * momentum_factor
+        vol_floor_pct = (
+            atr_threshold_pct
+            * concentration_factor
+            * effective_momentum_factor
+            * w52_factor
+            * crs_amplifier
+        )
 
     # ── Compose final threshold ──────────────────────────────────────────────
     if vol_floor_pct is not None:
@@ -343,8 +430,24 @@ def compute_tax_aware_stop(
                 f"Concentration overlay ({float(pct_of_portfolio):.1f}% of portfolio → "
                 f"{float(concentration_factor):.2f}× tighter)."
             )
-        if momentum_flag:
+        if effective_momentum_flag:
             rationale.append("Momentum flag: price below 50-DMA for 3+ consecutive days → 15% tighter.")
+        if w52_zone == "near_high":
+            pct_str = f"{w52_proximity_pct*100:.1f}%" if w52_proximity_pct is not None else "—"
+            rationale.append(
+                f"52W high proximity ({pct_str} below high) — resistance zone → 15% tighter "
+                "(George & Hwang anchoring bias)."
+            )
+        elif w52_zone == "near_low":
+            rationale.append(
+                "52W low proximity — underreaction zone → stop loosened 15% "
+                "(George & Hwang 2004 upward bias)."
+            )
+        if n_confirming >= 2:
+            rationale.append(
+                f"CRS amplifier: {n_confirming} signals confirm bearish → "
+                f"{float(crs_amplifier):.2f}× nonlinear tightening (AQR ML)."
+            )
     elif vol_floor_pct is not None:
         rationale.append(
             f"Tax floor ({float(tax_floor_pct):.1f}%) governs (wider than ATR floor "
@@ -382,6 +485,13 @@ def compute_tax_aware_stop(
         wash_sale_days_remaining=None,
         action=action,
         rationale=rationale,
+        adx=adx,
+        adx_regime=adx_regime,
+        w52_zone=w52_zone,
+        w52_proximity_pct=w52_proximity_pct,
+        w52_factor=w52_factor,
+        crs_amplifier=crs_amplifier,
+        n_confirming_signals=n_confirming,
     )
 
 
@@ -393,12 +503,16 @@ def compute_tax_aware_stops(
     ledger_path=None,
     run_phase2: bool = True,
     run_phase3: bool = True,
+    run_phase4: bool = True,
 ) -> list[TaxAwareStop]:
     """Compute tax-aware stops for all holdings in a snapshot.
 
     Runs all available phases by default. Phase 2 (ATR + concentration) and
     Phase 3 (momentum) require yfinance network calls — set run_phase2=False
     to skip for speed (falls back to Phase 1 tax floor only).
+
+    Phase 4 (ADX regime gate + 52W proximity + CRS amplifier) also requires
+    yfinance — set run_phase4=False to skip (requires run_phase2=True).
 
     Args:
         snapshot:    Portfolio snapshot with holdings and current prices.
@@ -408,6 +522,8 @@ def compute_tax_aware_stops(
         ledger_path: Override for wash-sale ledger.
         run_phase2:  Compute ATR + concentration overlays (default True).
         run_phase3:  Compute momentum signals (default True, requires run_phase2).
+        run_phase4:  Compute ADX gate + 52W proximity + CRS amplifier
+                     (default True, requires run_phase2).
 
     Returns:
         List of TaxAwareStop, sorted: HARVEST → EXIT → WATCH → HOLD.
@@ -462,6 +578,18 @@ def compute_tax_aware_stops(
         from src.alerts.momentum import compute_momentum_flags
         momentum_map = compute_momentum_flags(tickers_with_price)
 
+    # ── Phase 4 prep: ADX regime gate + 52W proximity ────────────────────────
+    regime_map: dict[str, object] = {}
+    w52_map: dict[str, tuple] = {}
+    if run_phase2 and run_phase4:
+        logger.info("tax_aware_stops: computing ADX regime gates…")
+        from src.alerts.trend_regime import compute_regime_gates
+        regime_map = compute_regime_gates(tickers_with_price)
+
+        logger.info("tax_aware_stops: computing 52W proximity signals…")
+        from src.alerts.momentum import compute_52w_flags
+        w52_map = compute_52w_flags(tickers_with_price)
+
     # ── Per-position computation ─────────────────────────────────────────────
     for holding in equity_holdings:
         price = snapshot.prices.get(holding.ticker)
@@ -477,6 +605,14 @@ def compute_tax_aware_stops(
         atr_pct_val, atr_thresh = atr_map.get(holding.ticker, (None, None))
         mom_flag, mom_factor = momentum_map.get(holding.ticker, (False, Decimal("1")))
 
+        # Unpack Phase 4 data
+        regime = regime_map.get(holding.ticker)
+        adx_val = regime.adx if regime else None
+        adx_regime_str = regime.regime if regime else "unknown"
+        w52_zone, w52_prox, w52_factor = w52_map.get(
+            holding.ticker, ("neutral", None, Decimal("1"))
+        )
+
         try:
             stop = compute_tax_aware_stop(
                 holding=holding,
@@ -491,6 +627,11 @@ def compute_tax_aware_stops(
                 concentration_factor=conc_factor,
                 momentum_flag=mom_flag,
                 momentum_factor=mom_factor,
+                adx=adx_val,
+                adx_regime=adx_regime_str,
+                w52_zone=w52_zone,
+                w52_proximity_pct=w52_prox,
+                w52_factor=w52_factor,
             )
             stops.append(stop)
         except Exception as e:
@@ -504,19 +645,27 @@ def compute_tax_aware_stops(
     _order = {"HARVEST": 0, "EXIT_TAX_DRAG_LOW": 1, "EXIT_LTCG": 2, "WATCH": 3, "HOLD": 4}
     stops.sort(key=lambda s: (_order.get(s.action, 5), -abs(float(s.unrealized_gain_dollars))))
 
-    # Mark Phase 3 on all positions when it was computed (even if no flags triggered)
+    # Mark Phase 3 and Phase 4 on all positions when computed (even if no flags triggered)
     if run_phase2 and run_phase3:
         for s in stops:
             if 2 in s.phases_applied and 3 not in s.phases_applied:
                 s.phases_applied.append(3)
+    if run_phase2 and run_phase4:
+        for s in stops:
+            if 2 in s.phases_applied and 4 not in s.phases_applied:
+                s.phases_applied.append(4)
 
     phases_str = ",".join(str(p) for p in sorted({p for s in stops for p in s.phases_applied}))
+    n_choppy = sum(1 for s in stops if s.adx_regime == "choppy")
+    n_near_high = sum(1 for s in stops if s.w52_zone == "near_high")
+    n_crs = sum(1 for s in stops if s.n_confirming_signals >= 2)
     logger.info(
         f"tax_aware_stops: {len(stops)} positions (phases {phases_str}) — "
         f"{sum(1 for s in stops if s.action == 'HARVEST')} HARVEST, "
         f"{sum(1 for s in stops if s.action == 'WATCH')} WATCH, "
         f"{sum(1 for s in stops if s.action in ('EXIT_TAX_DRAG_LOW', 'EXIT_LTCG'))} EXIT, "
-        f"{sum(1 for s in stops if s.action == 'HOLD')} HOLD"
+        f"{sum(1 for s in stops if s.action == 'HOLD')} HOLD | "
+        f"ADX choppy: {n_choppy}, near 52W high: {n_near_high}, CRS amplified: {n_crs}"
     )
     return stops
 
@@ -555,12 +704,15 @@ def format_tax_aware_table(stops: list[TaxAwareStop], max_rows: int = 50) -> str
         # Show both tax floor and vol floor when Phase 2+ was run
         floor_detail = ""
         if s.atr_threshold_pct is not None:
-            vf = s.vol_floor_pct
             floor_detail = (
                 f"  [tax:{float(s.tax_floor_pct):.1f}%"
                 f" atr:{float(s.atr_threshold_pct):.1f}%"
                 + (f" conc:{float(s.concentration_factor):.2f}×" if s.concentration_factor < Decimal("1") else "")
                 + (f" 📉mom" if s.momentum_flag else "")
+                + (f" 🚧adx:{s.adx:.0f}⚡" if s.adx_regime == "choppy" and s.adx is not None else "")
+                + (f" 🏔52Whi" if s.w52_zone == "near_high" else "")
+                + (f" 🪜52Wlo" if s.w52_zone == "near_low" else "")
+                + (f" CRS×{float(s.crs_amplifier):.2f}" if s.crs_amplifier < Decimal("1") else "")
                 + f" → final:{float(s.final_threshold_pct):.1f}%]"
             )
 
