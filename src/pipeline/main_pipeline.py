@@ -426,6 +426,168 @@ def _fetch_signals_for_ticker(ticker: str):
         return ticker, None, None
 
 
+def _run_squeeze_checks(
+    analyst_reports: list,
+    director_report: object,
+    squeeze_tickers: tuple[str, ...] = ("INTU",),
+) -> None:
+    """Run short squeeze checks for tickers held on a squeeze thesis.
+
+    For each ticker in squeeze_tickers that is present in analyst_reports:
+      - Score the squeeze setup (0-10)
+      - If score >= 7: append a note to the analyst report's tax_note field
+        (rendered in the newsletter under that ticker's section) and append an
+        action item to director_report.action_items
+      - If score >= 7: fire a Discord alert (non-blocking; failure is logged, not raised)
+
+    Runs silently — all errors are caught and logged so a squeeze check failure
+    never aborts the main pipeline.
+
+    Args:
+        analyst_reports: List of AnalystReport objects from the pipeline.
+        director_report:  DirectorReport with an action_items list.
+        squeeze_tickers:  Tickers to check (default: INTU only).
+    """
+    try:
+        from src.alerts.short_squeeze_monitor import run_squeeze_check, squeeze_alert
+    except ImportError as e:
+        logger.warning(f"squeeze_check: import failed — skipping ({e})")
+        return
+
+    # Build a quick lookup: ticker → analyst report (case-insensitive)
+    report_map = {ar.ticker.upper(): ar for ar in analyst_reports}
+
+    for ticker in squeeze_tickers:
+        ticker = ticker.upper()
+        if ticker not in report_map:
+            logger.debug(f"squeeze_check: {ticker} not in portfolio — skipping")
+            continue
+
+        logger.info(f"squeeze_check: running for {ticker}…")
+        try:
+            result = run_squeeze_check(ticker)
+        except Exception as e:
+            logger.warning(f"squeeze_check: failed for {ticker} ({e}) — skipping")
+            continue
+
+        logger.info(
+            f"squeeze_check: {ticker} score={result.score}/10 ({result.score_label})"
+        )
+
+        if result.score < 7:
+            logger.info(
+                f"squeeze_check: {ticker} score {result.score}/10 < 7 — no newsletter injection"
+            )
+            continue
+
+        # ── Inject into analyst report's tax_note (rendered in newsletter) ──
+        ar = report_map[ticker]
+        squeeze_note = (
+            f"**SHORT SQUEEZE MONITOR — Score {result.score}/10 ({result.score_label})**\n"
+            f"Short Float: {f'{result.short_float * 100:.1f}%' if result.short_float is not None else 'N/A'} | "
+            f"Days-to-Cover: {f'{result.days_to_cover:.1f}' if result.days_to_cover is not None else 'N/A'} | "
+            f"RSI: {f'{result.rsi_14:.1f}' if result.rsi_14 is not None else 'N/A'}\n"
+            f"Signals: {'; '.join(result.signals) if result.signals else 'See score breakdown.'}\n"
+            f"Hold position — squeeze setup forming. Confirm thesis before taking action."
+        )
+        if ar.tax_note:
+            ar.tax_note = ar.tax_note + "\n\n" + squeeze_note
+        else:
+            ar.tax_note = squeeze_note
+
+        # ── Add action item to director report ──────────────────────────────
+        action_item = (
+            f"SQUEEZE ALERT: {ticker} scores {result.score}/10 — "
+            f"short float {f'{result.short_float * 100:.1f}%' if result.short_float is not None else 'N/A'}, "
+            f"DTC {f'{result.days_to_cover:.1f}' if result.days_to_cover is not None else 'N/A'}. "
+            f"Hold — squeeze setup is forming."
+        )
+        try:
+            director_report.action_items.append(action_item)
+        except Exception as e:
+            logger.debug(f"squeeze_check: could not append action item: {e}")
+
+        # ── Discord alert ────────────────────────────────────────────────────
+        try:
+            squeeze_alert(result)
+        except Exception as e:
+            logger.warning(f"squeeze_check: Discord alert failed for {ticker}: {e}")
+
+
+def _run_insider_cluster_checks(
+    analyst_reports: list,
+    director_report: object,
+) -> None:
+    """Run EDGAR Form 4 insider cluster checks for all portfolio tickers.
+
+    For each ticker in analyst_reports:
+      - Scan Form 4s over the past 60 days for open-market purchases
+      - If 3+ distinct insiders bought within any 30-day window, inject a note
+        into the analyst report and add an action item to the director report
+      - Fire a Discord alert for STRONG clusters (2+ officers OR 5+ insiders)
+
+    Runs silently — errors are caught per-ticker so a single failure never
+    aborts the main pipeline. EDGAR network calls are rate-limited (~8 req/s).
+
+    Args:
+        analyst_reports: List of AnalystReport objects from the pipeline.
+        director_report:  DirectorReport with an action_items list.
+    """
+    try:
+        from src.alerts.insider_cluster import run_insider_cluster_check, cluster_alert
+    except ImportError as e:
+        logger.warning(f"insider_cluster: import failed — skipping ({e})")
+        return
+
+    report_map = {ar.ticker.upper(): ar for ar in analyst_reports}
+    tickers = list(report_map.keys())
+    logger.info(f"insider_cluster: scanning {len(tickers)} portfolio tickers via EDGAR…")
+
+    for ticker in tickers:
+        logger.info(f"insider_cluster: checking {ticker}…")
+        try:
+            result = run_insider_cluster_check(ticker)
+        except Exception as e:
+            logger.warning(f"insider_cluster: failed for {ticker} ({e}) — skipping")
+            continue
+
+        if result is None:
+            continue
+
+        # ── Inject into analyst report's tax_note ──────────────────────────────
+        ar = report_map[ticker]
+        cluster_note = result.newsletter_section()
+        if ar.tax_note:
+            ar.tax_note = ar.tax_note + "\n\n" + cluster_note
+        else:
+            ar.tax_note = cluster_note
+
+        # ── Add action item to director report ──────────────────────────────────
+        val_str = f"~${result.total_value:,.0f}" if result.total_value else "value unknown"
+        action_item = (
+            f"INSIDER CLUSTER BUY: {ticker} — {result.insider_count} insiders "
+            f"({result.officer_count} officers) bought {result.total_shares:,.0f} sh "
+            f"({val_str}) between {result.window_start}→{result.window_end}. "
+            f"Signal: {result.signal_strength}."
+        )
+        try:
+            director_report.action_items.append(action_item)
+        except Exception as e:
+            logger.debug(f"insider_cluster: could not append action item: {e}")
+
+        # ── Discord alert for STRONG clusters only ───────────────────────────────
+        if result.signal_strength == "STRONG":
+            try:
+                cluster_alert(result)
+            except Exception as e:
+                logger.warning(f"insider_cluster: Discord alert failed for {ticker}: {e}")
+        else:
+            logger.info(
+                f"insider_cluster: {ticker} cluster is {result.signal_strength} — "
+                "no Discord alert (STRONG threshold not met)"
+            )
+
+
 def run_pipeline(
     portfolio_csv: str | None = None,
     report_date: date | None = None,
@@ -647,6 +809,12 @@ def run_pipeline(
     logger.info(f"      Theme: {director_report.market_theme[:80]}")
     logger.info(f"      Sentiment: {director_report.overall_sentiment:+.2f}")
     _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="director")
+
+    # ── Short squeeze monitoring (INTU / any ticker with squeeze thesis) ──────
+    _run_squeeze_checks(analyst_reports, director_report)
+
+    # ── EDGAR Form 4 insider cluster scanner (all portfolio tickers) ──────────
+    _run_insider_cluster_checks(analyst_reports, director_report)
 
     # ── Newsletter generation ──────────────────────────────────────
     logger.info("[6/6] Generating newsletter...")

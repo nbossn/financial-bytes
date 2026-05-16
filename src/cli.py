@@ -1725,5 +1725,191 @@ def compare_providers(tickers, portfolio, portfolio_name, output):
         click.echo(f"\nResults written to {output}")
 
 
+# ── squeeze-check ─────────────────────────────────────────────────
+@cli.command("squeeze-check")
+@click.argument("ticker")
+@click.option("--no-alert", is_flag=True,
+              help="Run check only; suppress Discord notification even when score >= 7")
+def squeeze_check(ticker: str, no_alert: bool) -> None:
+    """Check short squeeze setup signals for a ticker.
+
+    Scores the likelihood of a short squeeze forming on a 0-10 scale
+    using free data sources (FINRA REGSHO + yfinance). When score >= 7,
+    sends a Discord alert unless --no-alert is set.
+
+    Primary use case: INTU (Lilich Trust, held on squeeze thesis).
+
+    \b
+    Scoring:
+      +2  Days-to-cover > 5
+      +2  Short float > 20%
+      +1  RSI < 35 (oversold)
+      +2  RSI turning from oversold (momentum reversal)
+      +1  Call/put ratio > 1.5
+      +2  Price holding above 52W low despite high short interest
+
+    \b
+    Score bands:
+      7-10  HIGH — flag in newsletter, send Discord alert
+      4-6   MODERATE — monitor weekly
+      0-3   LOW — background monitoring
+
+    \b
+    Examples:
+      financial-bytes squeeze-check INTU
+      financial-bytes squeeze-check INTU --no-alert
+      financial-bytes squeeze-check GME
+    """
+    from src.alerts.short_squeeze_monitor import run_squeeze_check, squeeze_alert
+
+    t = _validate_ticker(ticker)
+    click.echo(f"\nRunning short squeeze check for {t}...")
+
+    result = run_squeeze_check(t)
+
+    # ── Output ──────────────────────────────────────────────────────
+    click.echo(f"\n{'=' * 56}")
+    click.echo(f"  {t} Short Squeeze Monitor — {result.check_date}")
+    click.echo(f"{'=' * 56}")
+    click.echo(f"  Score      : {result.score}/10 — {result.score_label}")
+    click.echo(f"{'─' * 56}")
+
+    short_pct = f"{result.short_float * 100:.1f}%" if result.short_float is not None else "N/A"
+    dtc       = f"{result.days_to_cover:.1f}" if result.days_to_cover is not None else "N/A"
+    rsi       = f"{result.rsi_14:.1f}" if result.rsi_14 is not None else "N/A"
+    cpr       = f"{result.call_put_ratio:.2f}" if result.call_put_ratio is not None else "N/A"
+    price     = f"${result.current_price:.2f}" if result.current_price is not None else "N/A"
+    low_52w   = f"${result.week_52_low:.2f}" if result.week_52_low is not None else "N/A"
+
+    click.echo(f"  Price      : {price}  (52W Low: {low_52w})")
+    click.echo(f"  Short Float: {short_pct}")
+    click.echo(f"  Days-Cover : {dtc}")
+    click.echo(f"  RSI (14d)  : {rsi}  (turning: {'yes' if result.rsi_turning else 'no'})")
+    click.echo(f"  C/P Ratio  : {cpr}")
+    click.echo(f"{'─' * 56}")
+
+    if result.signals:
+        click.echo("  Active signals:")
+        for sig in result.signals:
+            click.echo(f"    + {sig}")
+    else:
+        click.echo("  No active signals above threshold.")
+
+    click.echo(f"{'─' * 56}")
+
+    source_note = (
+        f"FINRA REGSHO ({result.short_data_as_of})"
+        if result.short_data_source == "finra"
+        else "yfinance info dict"
+    )
+    click.echo(f"  Short data : {source_note}")
+
+    # Score breakdown
+    click.echo(f"\n  Score breakdown:")
+    bd = result.score_breakdown
+    click.echo(f"    Days-to-cover >5       : +{bd.get('days_to_cover', 0)}/2")
+    click.echo(f"    Short float >20%       : +{bd.get('short_float', 0)}/2")
+    click.echo(f"    RSI oversold <35       : +{bd.get('rsi_oversold', 0)}/1")
+    click.echo(f"    RSI uptick from oversold: +{bd.get('rsi_uptick', 0)}/2")
+    click.echo(f"    Call/put >1.5          : +{bd.get('call_put_ratio', 0)}/1")
+    click.echo(f"    Price above 52W low    : +{bd.get('price_above_52w_low', 0)}/2")
+    click.echo(f"    TOTAL                  : {result.score}/10")
+
+    click.echo(f"{'=' * 56}\n")
+
+    # ── Discord alert ────────────────────────────────────────────────
+    if result.score >= 7 and not no_alert:
+        sent = squeeze_alert(result)
+        if sent:
+            click.echo(f"Discord alert sent (score {result.score}/10 >= 7 threshold).")
+        else:
+            click.echo("Discord alert failed or DISCORD_WEBHOOK_URL not set.")
+    elif result.score >= 7 and no_alert:
+        click.echo(f"Score {result.score}/10 >= 7 but --no-alert set — Discord skipped.")
+    else:
+        click.echo(f"Score {result.score}/10 < 7 — no Discord alert.")
+
+
+# ── insider-cluster ───────────────────────────────────────────────
+@cli.command("insider-cluster")
+@click.argument("ticker")
+@click.option("--lookback", default=60, show_default=True,
+              help="Days back to search for Form 4 filings.")
+@click.option("--window", default=30, show_default=True,
+              help="Rolling window (days) for cluster detection.")
+@click.option("--min-insiders", default=3, show_default=True,
+              help="Minimum distinct insiders to flag as a cluster.")
+@click.option("--no-alert", is_flag=True,
+              help="Suppress Discord notification even when cluster found.")
+def insider_cluster(ticker: str, lookback: int, window: int, min_insiders: int, no_alert: bool) -> None:
+    """Scan SEC EDGAR Form 4s for insider cluster buys.
+
+    Flags when 3+ distinct insiders at the same company file open-market
+    purchase transactions (code P) within a rolling 30-day window.
+    Queries the free EDGAR REST API — no API key required.
+
+    Academic basis: cluster insider buys predict ~6% excess return over
+    30 days (Lakonishok & Lee 2001; Jeng, Metrick & Zeckhauser 2003).
+
+    \b
+    Signal strength:
+      STRONG    2+ officers buying OR 5+ any insiders in window
+      NOTABLE   1 officer buying OR 3–4 any insiders in window
+      WEAK      3 directors only (counted but lower conviction)
+
+    \b
+    Examples:
+      financial-bytes insider-cluster NVDA
+      financial-bytes insider-cluster AVGO --lookback 90
+      financial-bytes insider-cluster GS --min-insiders 2 --no-alert
+    """
+    from src.alerts.insider_cluster import run_insider_cluster_check, cluster_alert
+
+    t = _validate_ticker(ticker)
+    click.echo(f"\nScanning EDGAR Form 4s for {t} ({lookback}d lookback, {window}d cluster window)...")
+    click.echo("This may take 10–30s depending on filing volume.\n")
+
+    result = run_insider_cluster_check(t, lookback_days=lookback, window_days=window, min_insiders=min_insiders)
+
+    click.echo(f"{'=' * 64}")
+    click.echo(f"  {t} — EDGAR Insider Cluster Scanner")
+    click.echo(f"{'=' * 64}")
+
+    if result is None:
+        click.echo(f"  No cluster detected: < {min_insiders} distinct insiders bought")
+        click.echo(f"  within any {window}-day window over the past {lookback} days.")
+        click.echo(f"{'=' * 64}\n")
+        return
+
+    val_str = f"~${result.total_value:,.0f}" if result.total_value else "value unspecified"
+    click.echo(f"  🏛 CLUSTER DETECTED — {result.signal_strength}")
+    click.echo(f"{'─' * 64}")
+    click.echo(f"  Insiders (distinct) : {result.insider_count}")
+    click.echo(f"  Officers buying     : {result.officer_count}")
+    click.echo(f"  Total shares bought : {result.total_shares:,.0f}")
+    click.echo(f"  Estimated value     : {val_str}")
+    click.echo(f"  Window              : {result.window_start}  →  {result.window_end}")
+    click.echo(f"{'─' * 64}")
+    click.echo(f"  Transaction detail:")
+    seen: set[str] = set()
+    for txn in sorted(result.transactions, key=lambda x: x.transaction_date, reverse=True):
+        key = f"{txn.insider_name}-{txn.transaction_date}"
+        if key in seen:
+            continue
+        seen.add(key)
+        val = f"${txn.dollar_value:,.0f}" if txn.dollar_value else "—"
+        click.echo(
+            f"    {txn.transaction_date}  {txn.insider_name.title():<30} "
+            f"{txn.role:<22}  {txn.shares:>10,.0f} sh  {val}"
+        )
+    click.echo(f"{'=' * 64}\n")
+
+    if not no_alert:
+        cluster_alert(result)
+        click.echo("Discord alert sent (or DISCORD_WEBHOOK_URL not set — check logs).")
+    else:
+        click.echo("--no-alert set — Discord notification skipped.")
+
+
 if __name__ == "__main__":
     cli()
