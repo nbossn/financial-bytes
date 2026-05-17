@@ -94,10 +94,27 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         return settings.portfolio_csv_path, False
 
     def _apply_max_positions(holdings: list, pdef) -> list:
-        """If pdef.max_positions is set, keep only top-N by total cost basis value."""
-        import csv as _csv
+        """Filter holdings by allowed_tickers allowlist (strict) or max_positions cap (top-N).
+
+        Priority:
+          1. allowed_tickers — if set, keep ONLY those tickers (exact match, case-insensitive).
+             This is the authoritative scope for portfolios like Lilich where the CSV may
+             contain the full account but only a subset of tickers are under management.
+          2. max_positions — if set and no allowlist, keep top-N by total cost-basis value.
+        """
+        # 1. Allowlist takes precedence
+        if pdef.allowed_tickers:
+            allowed = {t.upper() for t in pdef.allowed_tickers}
+            filtered = [h for h in holdings if h.ticker.upper() in allowed]
+            excluded = [h.ticker for h in holdings if h.ticker.upper() not in allowed]
+            logger.info(
+                f"  allowed_tickers filter: keeping {len(filtered)} of {len(holdings)} holdings "
+                f"for {pdef.name} — excluded {len(excluded)}: {excluded[:10]}"
+            )
+            return filtered
+
+        # 2. Top-N cap fallback
         if pdef.max_positions and len(holdings) > pdef.max_positions:
-            from decimal import Decimal
             top = sorted(holdings, key=lambda h: h.shares * h.cost_basis, reverse=True)
             top = top[: pdef.max_positions]
             logger.info(
@@ -105,6 +122,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
                 f"{len(holdings)} holdings by value for {pdef.name}"
             )
             return top
+
         return holdings
 
     # ── Plaid (live, preferred when configured) ──────────────────────

@@ -21,6 +21,7 @@ class PortfolioDef:
     email_recipients: list[str] = field(default_factory=list)
     email_group: str | None = None              # group name: portfolios sharing a group send one combined email
     max_positions: int | None = None            # if set, keep only top-N positions by cost-basis value (for large accounts)
+    allowed_tickers: list[str] | None = None   # if set, ONLY analyze these tickers (strict allowlist — overrides max_positions)
     tax_bracket: str = "high"                  # "high" | "mid" | "low" — used by tax-aware stop engine
     niit: bool = True                          # Apply 3.8% NIIT to long-term gains (high earners)
 
@@ -68,6 +69,7 @@ def load_portfolio_defs(config_path: str | Path | None = None) -> list[Portfolio
             email_recipients=item.get("email_recipients", []),
             email_group=item.get("email_group"),
             max_positions=item.get("max_positions"),
+            allowed_tickers=[t.upper().strip() for t in item["tickers"]] if item.get("tickers") else None,
             tax_bracket=item.get("tax_bracket", "high"),
             niit=item.get("niit", True),
         ))

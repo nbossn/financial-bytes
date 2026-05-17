@@ -42,6 +42,7 @@ class AnalystReport(BaseModel):
     chart_daily_url: str | None = None
     chart_weekly_url: str | None = None
     tax_note: str | None = None  # generated post-analysis from tax lot data
+    interactive_chart_html: str | None = None  # Plotly HTML fragment (set by generator)
 
 
 def _format_articles(articles: list[ScrapedArticle]) -> str:
