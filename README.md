@@ -2,7 +2,7 @@
 
 Automated daily stock portfolio newsletter powered by AI agents. DB-first, resumable pipeline that scrapes financial news, pulls fundamentals and SEC filings, analyzes each holding with Claude, and delivers a pre-market brief to your inbox.
 
-Handles portfolios of **300+ tickers** via parallel scraping, DB-backed signal caching, and a crash-resumable analyst phase. Natively imports Fidelity positions exports (manual CSV or live automated scrape), supports multiple named portfolios with grouped email delivery, tracks per-lot capital gains tax exposure, and incorporates fundamental data (P/E, margins, short interest, ROE) and recent SEC filings into every analyst recommendation.
+Handles portfolios of **300+ tickers** via parallel scraping, DB-backed signal caching, and a crash-resumable analyst phase. Natively imports Fidelity positions exports (manual CSV or live automated scrape), supports multiple named portfolios with grouped email delivery, tracks per-lot capital gains tax exposure, and incorporates fundamental data (P/E, margins, short interest, ROE), recent SEC filings, quantitative risk metrics, and EDGAR insider transaction signals into every analyst recommendation. Each ticker in the newsletter includes an **interactive Plotly candlestick chart** with overlays and signal summaries.
 
 ---
 
@@ -11,6 +11,10 @@ Handles portfolios of **300+ tickers** via parallel scraping, DB-backed signal c
 - [Architecture](#architecture)
 - [Pipeline Phases](#pipeline-phases)
 - [Resume Behavior](#resume-behavior)
+- [Stop-Loss Engine](#stop-loss-engine)
+- [Interactive Charts](#interactive-charts)
+- [EDGAR Insider Cluster Scanner](#edgar-insider-cluster-scanner)
+- [Short Squeeze Monitor](#short-squeeze-monitor)
 - [Installation](#installation)
 - [Portfolio Configuration](#portfolio-configuration)
 - [Per-Lot Tax Tracking](#per-lot-tax-tracking)
@@ -36,26 +40,27 @@ portfolios.json  →  portfolio_config.py  →  load_portfolio_defs()
                               │
                      [main_pipeline.py]
                               │
-          ┌───────────────────┼───────────────────────────┐
-          │                   │                           │
-   Phase 1: Portfolio  Phase 2: Scrape           Phase 3: Signals
-   CSV / Fidelity      articles table            api_signals table
-   export / Plaid      (DB-first)                (TTL cache)
-                              │                           │
-          ┌───────────────────┴───────────────────────────┘
+          ┌───────────────────┼────────────────────────────────────┐
+          │                   │                                    │
+   Phase 1: Portfolio  Phase 2: Scrape                    Phase 3: Signals
+   CSV / Fidelity      articles table                     api_signals table
+   export / Plaid      (DB-first)                         (TTL cache)
+                              │                                    │
+          ┌───────────────────┴────────────────────────────────────┘
           │
-   Phase 4: Analysts
+   Phase 4: Analysts + Quant
    summaries table (DB-first)
    asyncio.gather + Semaphore
    crash-resumable
           │
-   Phase 5: Director
+   Phase 5: Director + Insider Cluster Scan
    reads summaries from DB (no in-memory payload)
    prompt size bounded regardless of portfolio size
+   EDGAR Form 4 cluster check for each ticker
           │
    Phase 6: Newsletter
    newsletters/YYYY-MM-DD/<portfolio_name>/
-   HTML + Markdown + PDF
+   HTML (interactive Plotly charts) + Markdown + PDF
           │
    Email Sender  (per-portfolio or combined group email)
 ```
@@ -75,7 +80,19 @@ portfolios.json  →  portfolio_config.py  →  load_portfolio_defs()
 | `src/scrapers/scraper_orchestrator.py` | Multi-source parallel scraping |
 | `src/api/endpoints.py` | massive.com REST client — parallel signal fetching |
 | `src/agents/analyst_agent.py` | Analyst agent — async subprocess pool + semaphore + DB cache |
+| `src/agents/quant_agent.py` | Quant agent — beta, alpha, Sharpe, Sortino, momentum signals |
 | `src/agents/director_agent.py` | Director agent — reads from `summaries` DB, portfolio synthesis |
+| `src/agents/managing_director_agent.py` | Managing Director — synthesizes all analysis into ranked trade plays |
+| `src/agents/fullstack_agent.py` | Weekly maintenance — DB audit, cost audit, security scan |
+| `src/alerts/tax_aware_stops.py` | 4-phase tax-aware stop-loss engine |
+| `src/alerts/trend_regime.py` | ADX(14) regime gate — trending vs. choppy market detection |
+| `src/alerts/momentum.py` | 50-DMA momentum signal — consecutive-day below-DMA detection |
+| `src/alerts/concentration.py` | Portfolio concentration overlay — weight-based stop tightening |
+| `src/alerts/insider_cluster.py` | EDGAR Form 4 cluster buy scanner |
+| `src/alerts/short_squeeze_monitor.py` | Short squeeze setup detector — scores 0–10 |
+| `src/alerts/wash_sale.py` | IRS 30-day wash-sale window tracking |
+| `src/alerts/dynamic_stops.py` | ATR-based dynamic stop-loss (Phase 2 input) |
+| `src/charts/ohlcv_chart.py` | Interactive Plotly OHLCV chart builder — embedded in HTML newsletter |
 | `src/newsletter/generator.py` | Jinja2 HTML/MD rendering + WeasyPrint PDF |
 | `src/delivery/email_sender.py` | SMTP delivery + group email combining |
 | `src/scheduler.py` | APScheduler daemon |
@@ -96,7 +113,7 @@ Reads holdings from one of four sources:
 
 For fully automated Fidelity sync without manual CSV exports, see [Fidelity Live Sync](#fidelity-live-sync).
 
-If `max_positions` is set, only the top-N positions by cost-basis value (shares × cost_basis) are kept. Useful for accounts with 300+ holdings.
+If `max_positions` is set, only the top-N positions by cost-basis value (shares × cost_basis) are kept. If `tickers` is set, only the listed tickers are included (useful for trust or managed sub-accounts within a larger Fidelity export).
 
 ### Phase 2 — Scrape (DB-first)
 
@@ -108,19 +125,32 @@ Scraping runs via `ThreadPoolExecutor(MAX_PARALLEL_TICKERS)` — each worker han
 
 Checks the `api_signals` table. Signals cached within `SIGNAL_CACHE_TTL_HOURS` (default: 1h) are served from DB. Only stale tickers trigger live massive.com API calls. Live fetching runs two levels of concurrency: up to 10 tickers in parallel, each making 4 endpoint calls concurrently (quote, news, analyst ratings, technicals).
 
-### Phase 4 — Analysts (DB-first, crash-resumable)
+### Phase 4 — Analysts + Quant (DB-first, crash-resumable)
 
 Checks the `summaries` table before calling Claude. If today's summary for a ticker already exists, the Claude call is skipped entirely. All analyst calls run via `asyncio.gather` with a `asyncio.Semaphore(MAX_PARALLEL_ANALYSTS)` cap.
 
+The **Quant Agent** runs alongside the Analyst Agent, computing statistical risk metrics (beta, alpha, Sharpe, Sortino, momentum signal, drawdown, short squeeze risk) from price history. These feed into the Managing Director synthesis.
+
 Resume behavior: if a 345-ticker run crashes at ticker 200, restarting picks up from ticker 201. The 200 completed summaries in DB are served without any Claude calls.
 
-### Phase 5 — Director
+### Phase 5 — Director + Insider Cluster
 
-Reads all analyst summaries directly from the `summaries` DB table — no in-memory analyst payload is passed. Prompt size is bounded regardless of portfolio size. Single Claude Sonnet call that synthesizes a market theme, portfolio brief, and action items.
+The **Director Agent** reads all analyst summaries directly from the `summaries` DB table — no in-memory analyst payload is passed. Prompt size is bounded regardless of portfolio size. Single Claude Sonnet call that synthesizes a market theme, portfolio brief, and action items.
+
+The **Managing Director Agent** synthesizes the Analyst, Quant, and Director outputs into ranked trade plays — each with entry, target, stop-loss, time horizon, and risk/reward.
+
+The **Insider Cluster Scanner** runs against EDGAR Form 4 filings for each ticker. Any cluster of 3+ distinct insiders open-market buying within 30 days triggers a STRONG or NOTABLE flag that surfaces in the newsletter's action items.
 
 ### Phase 6 — Newsletter
 
-Generates HTML, Markdown, and PDF output in `newsletters/YYYY-MM-DD/<portfolio_name>/`. Includes portfolio P&L, per-lot tax efficiency section, collapsible per-stock analyst cards, and action checklist.
+Generates HTML, Markdown, and PDF output in `newsletters/YYYY-MM-DD/<portfolio_name>/`. The HTML newsletter includes:
+
+- Portfolio P&L and performance vs. SPY
+- Per-lot tax efficiency section
+- **Interactive Plotly candlestick charts** for each ticker (see [Interactive Charts](#interactive-charts))
+- Collapsible per-stock analyst cards with quant metrics
+- Insider cluster flags
+- Action checklist with trade play recommendations
 
 ---
 
@@ -148,6 +178,143 @@ On restart for the same portfolio and date:
 - Phase 5: runs only if director report is not yet in DB for today
 
 Same-day re-runs are effectively idempotent: zero LLM calls if all summaries are already in DB, zero scrape requests if all articles are fresh.
+
+---
+
+## Stop-Loss Engine
+
+The stop-loss engine computes per-position exit thresholds from first principles. It runs in four phases, each adding a layer of signal:
+
+### Phase 1 — Tax Floor + Wash-Sale
+
+Before applying any technical stop, the engine computes the **after-tax breakeven floor** — the price below which selling stops making financial sense after taxes. It also checks the **short-term → long-term conversion penalty** (suppresses sells within 30 days of LTCG conversion) and applies a **harvest priority short-circuit** for loss positions that are wash-sale clear.
+
+`tax_bracket` and `niit` are set per-portfolio in `portfolios.json` (see [Portfolio Configuration](#portfolio-configuration)).
+
+### Phase 2 — ATR Volatility + Concentration
+
+Computes an **ATR(14) volatility floor** from price history, then overlays a **concentration factor**: positions representing >10% of the portfolio get a 30% tighter stop; >5% get a 15% tighter stop.
+
+```
+Final Phase 2 = max(tax_floor, atr_floor × concentration_factor)
+```
+
+### Phase 3 — Momentum Signal
+
+The **50-DMA momentum filter** tightens the stop by 15% when a position's closing price has been below its 50-day moving average for 3+ consecutive trading days. This indicates the position has broken short-term trend support.
+
+```
+Final Phase 3 = max(tax_floor, atr_floor × concentration_factor × momentum_factor)
+```
+
+### Phase 4 — ADX Regime Gate + 52W Proximity + CRS Amplifier
+
+Three additional signal layers:
+
+- **ADX(14) Regime Gate** — if the market is choppy (ADX < 20, Wilder 1978), the 50-DMA signal is suppressed to prevent false stop exits during sideways chop. ADX 20–25 = weak trend (signals used but not amplified). ADX > 25 = confirmed trend (all signals valid).
+
+- **52-Week High/Low Proximity** — near the 52W high (resistance zone), stop is tightened 15%; near the 52W low (George & Hwang 2004 underreaction), stop is loosened 15% to allow recovery room.
+
+- **Multiplicative CRS Amplifier** — when 2+ signals confirm simultaneously (momentum + 52W high + concentration), a nonlinear multiplicative amplifier is applied. Each additional confirming signal adds 5% more tightening beyond the base factors. Based on AQR research showing 50–100% Sharpe improvement from signal combination.
+
+```
+Final Phase 4 = max(tax_floor, atr_floor × conc × momentum × w52 × crs)
+```
+
+### Wash-Sale Tracking
+
+`src/alerts/wash_sale.py` maintains an append-only JSON ledger of realized sells. Before issuing a HARVEST recommendation, the engine checks the IRS 30-day window to ensure the loss deduction won't be disallowed.
+
+### CLI
+
+```bash
+# Full tax-aware stop table for a portfolio
+financial-bytes tax-aware-stops --portfolio-name nbossn --bracket high --niit
+
+# Compare static vs. dynamic vs. hybrid stops
+financial-bytes suggest-stops --portfolio data/portfolio.csv
+
+# Quick threshold check with Discord alert
+financial-bytes check-stops --portfolio-name nbossn
+```
+
+---
+
+## Interactive Charts
+
+Every ticker in the HTML newsletter includes a **self-contained interactive Plotly candlestick chart**. No external server required — the chart JS is CDN-loaded once per email.
+
+### Chart Features
+
+- **1 year of OHLCV data** from yfinance, auto-adjusted for splits/dividends
+- **Range selectors**: 1D · 1W · 1M · 3M · 1Y · ALL
+- **Signal overlays**: 50-DMA, 20-DMA, ATR-based dynamic stop level
+- **52W high/low** horizontal reference lines
+- **Volume subplot** below the price chart
+- **Signal summary table** — ADX regime, RSI, 50-DMA position, 52W proximity, and their impact on the stop play — rendered below each chart
+
+Charts are generated by `src/charts/ohlcv_chart.py` and embedded via the `ar.interactive_chart_html` field in `AnalystReport`, rendered with `| safe` in `daily.html.j2`. Plotly CDN is loaded once in the email `<head>`.
+
+### Standalone Chart
+
+```bash
+# Generate a single-ticker chart HTML (useful for debugging or previewing)
+financial-bytes ticker-report NVDA --skip-email
+```
+
+---
+
+## EDGAR Insider Cluster Scanner
+
+`src/alerts/insider_cluster.py` scans SEC EDGAR Form 4 filings to detect when **3+ distinct insiders** at the same company file open-market purchase transactions (`code P`) within a 30-day rolling window.
+
+**Academic basis:** Cluster insider buys predict ~6% excess return over 30 days (Seyhun 1998; Lakonishok & Lee 2001; Jeng, Metrick & Zeckhauser 2003).
+
+**Signal strength:**
+
+| Strength | Criteria |
+|----------|----------|
+| STRONG | 2+ officers buying OR 5+ any insiders in window |
+| NOTABLE | 1 officer buying OR 3–4 any insiders in window |
+| WEAK | 3+ directors only |
+
+**Data source:** SEC EDGAR REST API (free, no API key required). Rate-limited to ~8 requests/second per EDGAR policy.
+
+The scanner runs automatically during Phase 5 for all portfolio tickers. Any STRONG or NOTABLE cluster surfaces as an action item in the newsletter. The pipeline logs WEAK clusters without alerting.
+
+### Standalone
+
+```bash
+# Check a specific ticker
+financial-bytes insider-cluster NVDA
+
+# Longer lookback window
+financial-bytes insider-cluster AVGO --lookback 90
+
+# Lower the cluster threshold
+financial-bytes insider-cluster GS --min-insiders 2 --no-alert
+```
+
+---
+
+## Short Squeeze Monitor
+
+`src/alerts/short_squeeze_monitor.py` scores each position's short squeeze setup probability from 0–10 using a multi-signal model.
+
+**Scoring:**
+
+| Signal | Points |
+|--------|--------|
+| Days-to-cover > 5 | +2 |
+| Short float > 20% | +2 |
+| RSI < 35 (oversold) | +1 |
+| RSI uptick from oversold | +2 |
+| Call/put ratio > 1.5 | +1 |
+| Price holding above 52W low despite high short interest | +2 |
+
+**Score bands:** 7–10 = HIGH (newsletter flag + Discord alert), 4–6 = MODERATE (monitor weekly), 0–3 = LOW (background only).
+
+Data: yfinance price/options history + FINRA REGSHO short interest (bi-weekly, free), with yfinance `info` fallback when REGSHO data is stale.
 
 ---
 
@@ -221,6 +388,9 @@ Define all portfolios in `portfolios.json` at the project root.
 | `purchase_history` | string | Path to a per-lot JSON file for LTCG tax classification |
 | `plaid_access_token_env` | string | Env var name containing a Plaid access token |
 | `max_positions` | integer | Cap pipeline to top-N positions by cost-basis value |
+| `tickers` | string[] | Allowlist — only these tickers are included (useful for a managed sub-account within a larger Fidelity export) |
+| `tax_bracket` | string | `"high"` / `"medium"` / `"low"` / `"trust"` — used by the tax-aware stop engine (default: `"high"`) |
+| `niit` | boolean | Apply 3.8% Net Investment Income Tax surcharge in stop calculations (default: `false`) |
 | `email_recipients` | string[] | Email addresses for this portfolio's newsletter |
 | `email_group` | string | Portfolios sharing the same group name get one combined email |
 
@@ -234,16 +404,20 @@ Define all portfolios in `portfolios.json` at the project root.
     "fidelity_positions": "/path/to/Portfolio_Positions_Apr-30-2026.csv",
     "purchase_history": "data/nbossn_purchase_history.json",
     "max_positions": 25,
+    "tax_bracket": "high",
+    "niit": true,
     "email_group": "nick",
     "email_recipients": ["you@example.com"]
   },
   {
-    "name": "trust",
-    "label": "Family Trust",
+    "name": "lilich",
+    "label": "Lilich Trust",
     "fidelity_positions": "/path/to/trust_positions.csv",
     "fidelity_account_filter": "Trust",
     "fidelity_creds_prefix": "LILICH",
     "purchase_history": "data/trust_purchase_history.json",
+    "tickers": ["GE", "AMZN", "NVDA", "GOOGL", "GOOG", "JPM"],
+    "tax_bracket": "trust",
     "email_recipients": ["trustee@example.com"]
   }
 ]
@@ -294,11 +468,13 @@ Use `null` shares to assign all remaining shares to a single-lot holding. Set a 
 ```
 
 ```bash
-financial-bytes add-earnings-event --date 2026-05-20 --ticker NVDA --time after-close \
-    --guide "Data Center revenue vs. $73-75B guidance"
+financial-bytes add-earnings-event --date 2026-05-27 --ticker NVDA --time after-close \
+    --guide "Data Center revenue vs. $78B guidance"
 
 financial-bytes show-earnings-calendar --days 30
 ```
+
+The daemon runs `premarket-check` automatically at 7:10 AM ET on days with pre-market events, sending a Discord notification with the decision rule before the market opens.
 
 ---
 
@@ -391,7 +567,7 @@ Options:
 financial-bytes run
 
 # Named portfolio, skip email
-financial-bytes run --portfolio-name trust --skip-email
+financial-bytes run --portfolio-name lilich --skip-email
 
 # Use cached articles
 financial-bytes run --skip-scrape --portfolio-name nbossn_fidelity
@@ -420,22 +596,45 @@ financial-bytes fidelity-sync --portfolio nbossn_fidelity --output fidelity-hold
 financial-bytes fidelity-sync --portfolio nbossn_fidelity --no-headless
 ```
 
-### Other Commands
+### Stop-Loss Commands
 
 | Command | Description |
 |---------|-------------|
+| `financial-bytes tax-aware-stops --portfolio-name NAME [--bracket high\|medium\|low\|trust] [--niit]` | Full 4-phase tax-aware stop table |
+| `financial-bytes suggest-stops --portfolio CSV` | Compare static vs. ATR vs. hybrid stops |
+| `financial-bytes check-stops --portfolio-name NAME [--mode static\|atr\|hybrid]` | Threshold check + Discord alert |
+
+### Research & Analysis Commands
+
+| Command | Description |
+|---------|-------------|
+| `financial-bytes insider-cluster TICKER [--lookback DAYS] [--window DAYS] [--min-insiders N]` | Scan EDGAR Form 4s for insider cluster buys |
+| `financial-bytes ticker-report TICKER` | Deep-dive analyst report on any ticker |
 | `financial-bytes analyse [TICKERS...]` | Run analyst agents only (no scrape, no email) |
-| `financial-bytes schedule` | Start APScheduler daemon |
-| `financial-bytes ticker-report TICKER` | Deep-dive on any ticker (not in portfolio) |
-| `financial-bytes check-stops` | Stop-loss threshold check + Discord alert |
+| `financial-bytes earnings-check` | Map earnings results to portfolio pre-commit rules |
+| `financial-bytes premarket-check -t TICKER -p PREV_CLOSE [...]` | Pre-market event check + Discord notification |
+
+### Portfolio & Performance Commands
+
+| Command | Description |
+|---------|-------------|
+| `financial-bytes portfolios` | List configured portfolios |
+| `financial-bytes track-performance` | Record daily P&L snapshot |
+| `financial-bytes show-performance [--days N]` | Historical performance chart |
 | `financial-bytes check-dividends` | Dividend income projections |
+| `financial-bytes fidelity-import --positions-csv PATH` | Parse Fidelity export to portfolio CSV |
+| `financial-bytes robinhood-import` | Import Robinhood activity via robin_stocks |
+| `financial-bytes plaid-setup --portfolio NAME` | OAuth Plaid link for live account sync |
+| `financial-bytes plaid-sync --portfolio NAME` | Fetch live holdings via Plaid |
+
+### Scheduling & Admin Commands
+
+| Command | Description |
+|---------|-------------|
+| `financial-bytes schedule` | Start APScheduler daemon |
 | `financial-bytes add-reminder` | Time-gated decision reminder |
 | `financial-bytes add-earnings-event` | Add event to earnings calendar |
-| `financial-bytes show-earnings-calendar` | Show upcoming earnings |
-| `financial-bytes track-performance` | Record daily P&L snapshot |
-| `financial-bytes show-performance` | Historical performance chart |
-| `financial-bytes earnings-check` | Map earnings results to portfolio actions |
-| `financial-bytes portfolios` | List configured portfolios |
+| `financial-bytes show-earnings-calendar [--days N]` | Show upcoming earnings |
 | `financial-bytes audit` | DB health check, cost audit, security scan |
 
 ---
@@ -524,12 +723,14 @@ Every failure path saves a labelled PNG to `data/fidelity_debug/`. Open these to
 |--------|--------|------|
 | Finviz | Selenium + requests + BeautifulSoup | News, fundamentals (P/E, EPS, margins, ROE, short float), SEC filings |
 | Google News RSS | requests + defusedxml | Headlines |
-| Yahoo Finance | requests + BeautifulSoup | Full article text |
+| Yahoo Finance | requests + BeautifulSoup + yfinance | Full article text, price history, OHLCV for charts |
 | CNBC | requests + BeautifulSoup (Queryly API) | Full article text |
 | MarketWatch | requests + BeautifulSoup | Snippets |
 | Morningstar | requests + BeautifulSoup | Analysis |
 | massive.com | REST API | Analyst ratings, price targets, technicals, Benzinga sentiment, real-time quotes |
-| DuckDuckGo | requests (DDGS) | Fallback |
+| SEC EDGAR | REST API (free) | Form 4 insider transactions — no key required |
+| FINRA REGSHO | CSV download (free, bi-weekly) | Short interest data for squeeze scoring |
+| DuckDuckGo | requests (DDGS) | Fallback article search |
 
 ---
 
@@ -538,7 +739,9 @@ Every failure path saves a labelled PNG to `data/fidelity_debug/`. Open these to
 | Agent | Model | Purpose |
 |-------|-------|---------|
 | Analyst | `claude-haiku-4-5` | Per-ticker BUY/HOLD/SELL with confidence, sentiment, catalysts, risks. Runs via `claude -p` subprocess, DB-cached per day. |
+| Quant | `claude-sonnet-4-6` | Statistical risk metrics — beta, alpha (annualized), Sharpe, Sortino, momentum signal, drawdown, short-squeeze risk, insider signal. |
 | Director | `claude-sonnet-4-6` | Portfolio synthesis — market theme, 5-min brief, action items. Reads analyst summaries from DB. |
+| Managing Director | `claude-sonnet-4-6` | Synthesizes Analyst + Quant + Director into ranked trade plays with entry, target, stop-loss, time horizon, and risk/reward ratios. |
 | Fidelity page classifier | `claude-haiku-4-5` | Vision-based classification of Fidelity browser state during live sync. Falls back to DOM inspection. |
 
 All analyst and director calls route through your Claude Code subscription via `claude -p`. The Fidelity classifier uses the Anthropic SDK directly (API key or Claude Code OAuth from `~/.claude/.credentials.json`).
@@ -550,9 +753,11 @@ All analyst and director calls route through your Claude Code subscription via `
 | Component | Model | Tokens/call (est.) |
 |-----------|-------|-------------------|
 | Analyst (per ticker) | Haiku 4.5 | ~4,000 in + ~600 out |
+| Quant (per ticker) | Sonnet 4.6 | ~3,000 in + ~500 out |
 | Director (once) | Sonnet 4.6 | ~8,000 in + ~800 out |
+| Managing Director (once) | Sonnet 4.6 | ~6,000 in + ~600 out |
 | Fidelity classifier (per nav step) | Haiku 4.5 | ~500 in + ~30 out |
-| **25-ticker pipeline** | | **~108K in + ~16K out** |
+| **25-ticker pipeline** | | **~195K in + ~26K out** |
 
 Run `financial-bytes audit` to see estimated costs from your actual DB call history.
 
@@ -571,6 +776,8 @@ Run `financial-bytes audit` to see estimated costs from your actual DB call hist
 - GitHub token via `GIT_ASKPASS` — never in command args
 - Fidelity session cookies stored at `chmod 600` — never committed
 - Debug screenshots stored at `chmod 600` — contain portfolio data
+- Wash-sale ledger stored locally at `data/wash_sale_log.json` — gitignored
+- EDGAR requests include User-Agent with contact info per SEC policy
 
 ---
 

@@ -34,10 +34,44 @@ class MassiveEndpoints:
         """
         Get current quote / snapshot for a ticker.
 
-        Primary: massive.com snapshot endpoint (requires paid plan).
-        Fallback: yfinance (Yahoo Finance, free, 15-min delayed during market hours).
+        Provider selection via DATA_PROVIDER in .env:
+          "massive"  — primary: massive.com snapshot, fallback: yfinance (default)
+          "alpaca"   — Alpaca IEX real-time snapshot (requires ALPACA_API_KEY)
+          "both"     — run Alpaca + yfinance in parallel, log discrepancies, return Alpaca result
+
+        In "both" mode the comparison is logged at INFO/WARNING level — check logs to
+        evaluate reliability before committing to a provider switch.
         """
-        # Try massive.com first
+        provider = getattr(settings, "data_provider", "massive").lower()
+
+        if provider == "alpaca":
+            from src.api.alpaca_client import get_quote_alpaca, AlpacaClientError
+            try:
+                result = get_quote_alpaca(ticker)
+                if result:
+                    return result
+                logger.warning(f"[alpaca] No data for {ticker} — falling back to yfinance")
+            except AlpacaClientError as e:
+                logger.warning(f"[alpaca] Config error: {e} — falling back to yfinance")
+            from src.api.yfinance_client import get_quote_yfinance
+            return get_quote_yfinance(ticker)
+
+        if provider == "both":
+            from src.api.alpaca_client import compare_with_yfinance, get_quote_alpaca, AlpacaClientError
+            try:
+                cmp = compare_with_yfinance(ticker)
+                # "both" returns Alpaca result when available, yfinance as fallback
+                if cmp["alpaca_ok"]:
+                    return get_quote_alpaca(ticker)
+                elif cmp["yfinance_ok"]:
+                    from src.api.yfinance_client import get_quote_yfinance
+                    return get_quote_yfinance(ticker)
+                return None
+            except AlpacaClientError as e:
+                logger.warning(f"[alpaca] Config error in 'both' mode: {e} — using massive/yfinance")
+            # Fall through to default path
+
+        # Default: massive.com → yfinance fallback
         try:
             data = self.client.get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
             result = data.get("ticker", {})
@@ -63,7 +97,6 @@ class MassiveEndpoints:
         except Exception as e:
             logger.warning(f"[massive.com] Unexpected error for {ticker}: {e} — falling back to yfinance")
 
-        # Fallback: yfinance (free, EOD/delayed prices)
         from src.api.yfinance_client import get_quote_yfinance
         return get_quote_yfinance(ticker)
 
