@@ -9,6 +9,16 @@ portfolio.json
 portfolios.json
 data/*_purchase_history.json
 
+# Personal trading decisions, share counts, cost basis — private financial info
+data/reminders.json
+
+# Portfolio position CSVs — contain account numbers, share counts, cost basis
+data/*.csv
+
+# Fidelity scraper runtime data (cookies = session tokens; debug screenshots may contain PII)
+data/fidelity_sessions/
+data/fidelity_debug/
+
 # Newsletter output (managed via fullstack agent commits)
 newsletters/**/*.html
 newsletters/**/*.pdf
