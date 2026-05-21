@@ -183,3 +183,30 @@ class PipelineRun(Base):
     __table_args__ = (
         UniqueConstraint("portfolio_name", "report_date", name="uq_run_portfolio_date"),
     )
+
+
+class RealizedTransaction(Base):
+    __tablename__ = "realized_transactions"
+
+    id = Column(Integer, primary_key=True)
+    portfolio_name = Column(String(100), nullable=False, index=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    transaction_date = Column(Date, nullable=False)
+    shares = Column(Numeric(15, 4), nullable=False)
+    sale_price = Column(Numeric(15, 4), nullable=False)
+    gross_proceeds = Column(Numeric(18, 4), nullable=False)
+    cost_basis_total = Column(Numeric(18, 4), nullable=False)
+    realized_gain = Column(Numeric(18, 4), nullable=False)
+    gain_pct = Column(Numeric(8, 4))                   # gain as % of cost basis
+    gain_pct_of_proceeds = Column(Numeric(8, 4))       # gain as % of gross proceeds
+    holding_period = Column(String(20))                # "long" or "short"
+    lot_acquired = Column(Date)                        # acquisition date of the lot(s)
+    lot_source = Column(String(50))                    # "deposit", "espp", etc.
+    fed_tax_rate = Column(Numeric(6, 4))               # e.g. 0.238
+    fed_tax_estimated = Column(Numeric(18, 4))
+    state_tax_rate = Column(Numeric(6, 4))
+    state_tax_estimated = Column(Numeric(18, 4))
+    total_tax_estimated = Column(Numeric(18, 4))
+    net_proceeds_after_tax = Column(Numeric(18, 4))
+    notes = Column(Text)
+    created_at = Column(DateTime, default=_now)

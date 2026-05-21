@@ -55,7 +55,9 @@ def read_portfolio(csv_path: str | Path) -> list[Holding]:
                 if cost_basis <= 0:
                     raise ValueError(f"cost_basis must be positive, got {cost_basis}")
 
-                purchase_date = date.fromisoformat(row["purchase_date"].strip())
+                raw_date = row["purchase_date"].strip()
+                # Missing purchase date → sentinel old date (treats position as LTCG)
+                purchase_date = date.fromisoformat(raw_date) if raw_date else date(2000, 1, 1)
 
                 holdings.append(
                     Holding(

@@ -32,9 +32,19 @@ from __future__ import annotations
 import os
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from loguru import logger
+
+# Ensure .env is loaded into os.environ regardless of cwd.
+# Pydantic Settings resolves the file for its own fields only; this covers
+# os.getenv() calls in this module. Path is resolved relative to project root.
+# override=True is required: the shell may export empty-string vars (e.g. from
+# a prior `source .env` attempt) that would shadow the real values otherwise.
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 
 class PlaidConfigError(Exception):
@@ -57,22 +67,24 @@ def _get_plaid_client():
 
     client_id = os.getenv("PLAID_CLIENT_ID")
     secret = os.getenv("PLAID_SECRET")
-    env_name = os.getenv("PLAID_ENV", "development").lower()
+    env_name = os.getenv("PLAID_ENV", "production").lower()
 
     if not client_id or not secret:
         raise PlaidConfigError(
             "PLAID_CLIENT_ID and PLAID_SECRET must be set in .env.\n"
-            "Get them at: https://dashboard.plaid.com/team/keys\n"
-            "Use the Development environment for real Fidelity accounts."
+            "Get them at: https://dashboard.plaid.com/team/keys"
         )
 
+    # plaid-python v20+ removed the Development tier — use Production for real
+    # accounts, Sandbox for testing. "development" maps to Production for
+    # backward compatibility with older .env files.
     env_map = {
         "sandbox": plaid.Environment.Sandbox,
-        "development": plaid.Environment.Development,
+        "development": plaid.Environment.Production,  # legacy alias
         "production": plaid.Environment.Production,
     }
     if env_name not in env_map:
-        raise PlaidConfigError(f"PLAID_ENV must be sandbox|development|production, got: {env_name}")
+        raise PlaidConfigError(f"PLAID_ENV must be sandbox|production, got: {env_name}")
 
     configuration = plaid.Configuration(
         host=env_map[env_name],
@@ -112,13 +124,13 @@ def create_link_token(portfolio_name: str) -> str:
 
     client = _get_plaid_client()
 
+    # redirect_uri only needed for OAuth institutions (not Fidelity direct auth)
     request = LinkTokenCreateRequest(
         products=[Products("investments")],
         client_name="financial-bytes",
         country_codes=[CountryCode("US")],
         language="en",
         user=LinkTokenCreateRequestUser(client_user_id=f"user-{portfolio_name}"),
-        redirect_uri=None,
     )
 
     try:
@@ -216,15 +228,19 @@ def read_plaid_holdings(portfolio_name: str) -> list:
             logger.warning(f"[plaid] Invalid shares for {ticker}: {item['shares']}")
             continue
 
-        # Cost basis may be None if Plaid doesn't have it (transferred positions)
-        if item["cost_basis"] is not None:
+        # Plaid returns cost_basis as TOTAL cost for the position (not per-share).
+        # Holding model expects per-share cost_basis, so divide by shares here.
+        if item["cost_basis"] is not None and shares > 0:
             try:
-                cost_basis = Decimal(str(round(item["cost_basis"], 4)))
+                total_cb = Decimal(str(round(item["cost_basis"], 4)))
+                cost_basis = total_cb / shares
             except Exception:
                 logger.warning(f"[plaid] Invalid cost_basis for {ticker}: {item['cost_basis']}")
                 cost_basis = Decimal("0")
-        else:
+        elif item["cost_basis"] is None:
             logger.warning(f"[plaid] No cost basis for {ticker} — defaulting to 0 (transferred position?)")
+            cost_basis = Decimal("0")
+        else:
             cost_basis = Decimal("0")
 
         holdings.append(Holding(

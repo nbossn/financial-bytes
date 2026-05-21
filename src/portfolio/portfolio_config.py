@@ -14,11 +14,16 @@ class PortfolioDef:
     transactions_path: str | None = None    # Robinhood transaction history CSV
     fidelity_positions: str | None = None   # Fidelity Portfolio_Positions_*.csv export
     fidelity_account_filter: str | None = None  # Optional: filter by account name substring
+    fidelity_creds_prefix: str | None = None    # Env var prefix for Fidelity scraper creds
+                                                # e.g. "LILICH" → FIDELITY_LILICH_USERNAME etc.
     purchase_history: str | None = None     # JSON file with per-lot acquisition dates/costs
     plaid_access_token_env: str | None = None   # env var name storing Plaid access token
     email_recipients: list[str] = field(default_factory=list)
     email_group: str | None = None              # group name: portfolios sharing a group send one combined email
     max_positions: int | None = None            # if set, keep only top-N positions by cost-basis value (for large accounts)
+    allowed_tickers: list[str] | None = None   # if set, ONLY analyze these tickers (strict allowlist — overrides max_positions)
+    tax_bracket: str = "high"                  # "high" | "mid" | "low" — used by tax-aware stop engine
+    niit: bool = True                          # Apply 3.8% NIIT to long-term gains (high earners)
 
 
 def load_portfolio_defs(config_path: str | Path | None = None) -> list[PortfolioDef]:
@@ -58,11 +63,15 @@ def load_portfolio_defs(config_path: str | Path | None = None) -> list[Portfolio
             transactions_path=item.get("transactions_path") or item.get("transactions"),
             fidelity_positions=item.get("fidelity_positions"),
             fidelity_account_filter=item.get("fidelity_account_filter"),
+            fidelity_creds_prefix=item.get("fidelity_creds_prefix"),
             purchase_history=item.get("purchase_history"),
             plaid_access_token_env=item.get("plaid_access_token_env"),
             email_recipients=item.get("email_recipients", []),
             email_group=item.get("email_group"),
             max_positions=item.get("max_positions"),
+            allowed_tickers=[t.upper().strip() for t in item["tickers"]] if item.get("tickers") else None,
+            tax_bracket=item.get("tax_bracket", "high"),
+            niit=item.get("niit", True),
         ))
 
     if not defs:
@@ -70,3 +79,13 @@ def load_portfolio_defs(config_path: str | Path | None = None) -> list[Portfolio
         raise PortfolioReadError("portfolios.json must contain at least one portfolio definition")
 
     return defs
+
+
+def get_portfolio_config(portfolio_name: str) -> PortfolioDef:
+    """Return the PortfolioDef for a given portfolio name. Raises ValueError if not found."""
+    defs = load_portfolio_defs()
+    for d in defs:
+        if d.name == portfolio_name:
+            return d
+    valid = ", ".join(d.name for d in defs)
+    raise ValueError(f"Portfolio '{portfolio_name}' not found. Valid: {valid}")

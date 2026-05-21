@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     signal_cache_ttl_hours: int = Field(1, alias="SIGNAL_CACHE_TTL_HOURS")
     analyst_cache_enabled: bool = Field(True, alias="ANALYST_CACHE_ENABLED")
 
+    # Alpaca Markets (optional — price data + paper trading)
+    # Get keys at: https://alpaca.markets → paper account → API Keys
+    alpaca_api_key: str = Field("", alias="ALPACA_API_KEY")
+    alpaca_secret_key: str = Field("", alias="ALPACA_SECRET_KEY")
+    # "iex"  = free tier, real-time last-sale (default)
+    # "sip"  = paid tier, full NBBO
+    alpaca_data_feed: str = Field("iex", alias="ALPACA_DATA_FEED")
+    # "massive"  = default (massive.com + yfinance fallback)
+    # "alpaca"   = use Alpaca for price/news
+    # "both"     = run both in parallel, log discrepancies, use Alpaca result
+    data_provider: str = Field("massive", alias="DATA_PROVIDER")
+
     # Robinhood (optional — personal use, ToS risk accepted)
     robinhood_email: str = Field("", alias="ROBINHOOD_EMAIL")
     robinhood_password: str = Field("", alias="ROBINHOOD_PASSWORD")

@@ -753,6 +753,150 @@ def suggest_stops(portfolio: str, atr_multiplier: float, update_csv: bool) -> No
         click.echo("   Review changes before running check-stops — thresholds are now dynamic.")
 
 
+# ── tax-aware stops ──────────────────────────────────────────────
+@cli.command("tax-aware-stops")
+@click.option("--portfolio-name", default="nbossn_fidelity", show_default=True,
+              help="Portfolio identifier from portfolios.json")
+@click.option("--bracket",
+              type=click.Choice(["high", "mid", "low"], case_sensitive=False),
+              default=None,
+              help="Override tax bracket (default: from portfolio config)")
+@click.option("--no-niit", is_flag=True,
+              help="Disable 3.8% NIIT (overrides portfolio config)")
+@click.option("--no-alert", is_flag=True,
+              help="Compute only; skip Discord alert")
+@click.option("--max-hold-rows", type=int, default=20, show_default=True,
+              help="Max HOLD rows to display (non-actionable positions)")
+@click.option("--phase", type=click.Choice(["1", "2", "3"]), default="3", show_default=True,
+              help="Max phase to run: 1=tax floor only, 2=+ATR/concentration, 3=+momentum")
+def tax_aware_stops(
+    portfolio_name: str,
+    bracket: str | None,
+    no_niit: bool,
+    no_alert: bool,
+    max_hold_rows: int,
+    phase: str,
+) -> None:
+    """Compute tax-aware exit thresholds for every portfolio position.
+
+    Goes beyond flat stop-loss percentages: calculates the price floor below
+    which selling actually makes financial sense after accounting for capital
+    gains tax, short-term vs long-term treatment, wash-sale rules, and the
+    ST → LT conversion penalty.
+
+    \b
+    Actions:
+      HARVEST   — loss position, wash-sale clear → crystallize for tax savings
+      EXIT      — price below after-tax breakeven floor
+      WATCH     — approaching floor or near-zero gain position
+      HOLD      — within tax floor, no action needed
+
+    \b
+    Phase 1 (current): tax floor + wash-sale gate.
+    Phase 2 adds:      ATR volatility + concentration overlays.
+    Phase 3 adds:      Momentum + news signals + newsletter integration.
+    """
+    import tempfile
+    from decimal import Decimal
+    from pathlib import Path
+
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.reader import read_portfolio
+    from src.portfolio.models import PortfolioSnapshot
+    from src.alerts.stop_loss import _fetch_prices
+    from src.alerts.tax_aware_stops import (
+        compute_tax_aware_stops,
+        format_tax_aware_table,
+        format_tax_aware_discord,
+    )
+    from src.pipeline.main_pipeline import (
+        _resolve_portfolio_csv,
+        _load_purchase_history,
+        _apply_purchase_history_to_holdings,
+    )
+
+    click.echo(f"Loading portfolio: {portfolio_name}…")
+
+    # Resolve portfolio def for tax settings
+    try:
+        pdef = get_portfolio_config(portfolio_name)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+    use_bracket = bracket or pdef.tax_bracket
+    use_niit    = False if no_niit else pdef.niit
+
+    click.echo(
+        f"Tax settings: bracket={use_bracket}, NIIT={'yes' if use_niit else 'no'}"
+    )
+
+    # Load holdings via the same pipeline logic (live scraper → CSV fallback)
+    csv_path_str, is_temp = _resolve_portfolio_csv(portfolio_name)
+    try:
+        holdings = read_portfolio(csv_path_str)
+    finally:
+        if is_temp:
+            try:
+                Path(csv_path_str).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if not holdings:
+        click.echo("No holdings found.")
+        return
+
+    # Apply purchase history for accurate ST/LT classification
+    lot_overrides = _load_purchase_history(portfolio_name)
+    _apply_purchase_history_to_holdings(holdings, lot_overrides)
+
+    click.echo(f"Fetching prices for {len(holdings)} positions…")
+    tickers = [h.ticker for h in holdings]
+    prices = _fetch_prices(tickers)
+
+    missing = [t for t in tickers if t not in prices]
+    if missing:
+        click.echo(f"  ⚠️  No price data for {len(missing)} tickers: {', '.join(missing[:10])}"
+                   + (" …" if len(missing) > 10 else ""))
+
+    snapshot = PortfolioSnapshot(
+        holdings=holdings,
+        prices=prices,
+        lot_overrides=lot_overrides,
+    )
+
+    phase_int = int(phase)
+    click.echo(f"Computing tax-aware thresholds (phase {phase_int})…\n")
+    stops = compute_tax_aware_stops(
+        snapshot,
+        bracket=use_bracket,
+        niit=use_niit,
+        run_phase2=(phase_int >= 2),
+        run_phase3=(phase_int >= 3),
+    )
+
+    table = format_tax_aware_table(stops, max_rows=max_hold_rows)
+    click.echo(table)
+
+    # Discord alert for HARVEST / EXIT positions (unless --no-alert)
+    if not no_alert:
+        actionable = [s for s in stops if s.action in ("HARVEST", "EXIT_TAX_DRAG_LOW", "EXIT_LTCG")]
+        if actionable:
+            import os, requests as _req
+            webhook = os.getenv("DISCORD_WEBHOOK_URL")
+            if webhook:
+                msg = format_tax_aware_discord(stops, portfolio_name)
+                try:
+                    resp = _req.post(webhook, json={"content": msg}, timeout=10)
+                    resp.raise_for_status()
+                    click.echo(f"\n📣 Discord alert sent ({len(actionable)} actionable positions)")
+                except Exception as e:
+                    click.echo(f"\n⚠️  Discord alert failed: {e}")
+            else:
+                click.echo("\n⚠️  DISCORD_WEBHOOK_URL not set — skipping alert")
+        else:
+            click.echo("\n✅ No immediate actions — Discord alert skipped")
+
+
 # ── dividend check ────────────────────────────────────────────────
 @cli.command("check-dividends")
 @click.option("--portfolio", "-p", default="portfolio.csv", show_default=True,
@@ -921,6 +1065,142 @@ document.getElementById("link-btn").onclick = function() {{ handler.open(); }};
         click.echo(f"   Run: financial-bytes plaid-sync --portfolio {portfolio}")
     else:
         click.echo("\n⚠️  Setup did not complete — no token received.", err=True)
+
+
+# ── fidelity-setup ────────────────────────────────────────────────
+@cli.command("fidelity-setup")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name (e.g. nbossn_fidelity, lilich)")
+@click.option("--timeout", default=300, show_default=True,
+              help="Seconds to wait for manual login")
+def fidelity_setup(portfolio: str, timeout: int) -> None:
+    """Establish a Fidelity session by logging in manually (one-time setup).
+
+    Opens a Chrome window and waits for you to log in to Fidelity. Once the
+    portfolio page is detected, session cookies are saved automatically and
+    reused by fidelity-sync for ~7 days — no further interaction needed.
+
+    Run this once per portfolio. Re-run when cookies expire (~7 days).
+
+    \b
+    Examples:
+      financial-bytes fidelity-setup --portfolio nbossn_fidelity
+      financial-bytes fidelity-setup --portfolio lilich
+    """
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.fidelity_scraper import (
+        setup_fidelity_cookies, FidelityScraperError
+    )
+
+    try:
+        config = get_portfolio_config(portfolio)
+    except Exception as e:
+        raise click.UsageError(f"Unknown portfolio '{portfolio}': {e}")
+
+    creds_prefix = getattr(config, "fidelity_creds_prefix", "") or ""
+
+    click.echo(f"\n🔐 Fidelity session setup for: {portfolio}")
+    if creds_prefix:
+        click.echo(f"   Credentials prefix: FIDELITY_{creds_prefix.upper()}_*")
+
+    try:
+        setup_fidelity_cookies(creds_prefix=creds_prefix, timeout_secs=timeout)
+        click.echo("\n✅ Done. Run fidelity-sync now to test:")
+        click.echo(f"   financial-bytes fidelity-sync --portfolio {portfolio} --dry-run")
+    except FidelityScraperError as e:
+        raise click.UsageError(str(e))
+
+
+# ── fidelity-sync ─────────────────────────────────────────────────
+@cli.command("fidelity-sync")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name (e.g. lilich, nbossn_fidelity)")
+@click.option("--output", "-o", default=None,
+              help="Write holdings to this CSV file (optional)")
+@click.option("--no-headless", is_flag=True, default=False,
+              help="Show browser window (useful for debugging or manual 2FA)")
+@click.option("--dry-run", is_flag=True, help="Print holdings without writing any files")
+def fidelity_sync(portfolio: str, output: str | None, no_headless: bool, dry_run: bool) -> None:
+    """Download live Fidelity positions via automated browser login.
+
+    Logs into Fidelity with FIDELITY_* credentials from .env, exports the
+    positions CSV, and parses it through the standard fidelity_reader pipeline.
+
+    Works for all account types: brokerage, IRA, trust (lilich), 401k.
+
+    Login is fully automated: credentials + TOTP codes are generated from .env.
+    Saved session cookies are reused to avoid logging in on every run (~7 day TTL).
+    If Akamai rate-limits a login attempt, the scraper backs off exponentially
+    (30s → 60s → 120s → 240s) and retries automatically — no manual action needed.
+
+    \b
+    Prerequisites (add to .env):
+      FIDELITY_USERNAME       — your Fidelity username
+      FIDELITY_PASSWORD       — your Fidelity password
+      FIDELITY_2FA_SECRET     — Base32 TOTP secret from Fidelity Security Center
+                                (enroll an authenticator app, copy the setup key)
+
+    For lilich (separate login), also set:
+      FIDELITY_LILICH_USERNAME / FIDELITY_LILICH_PASSWORD / FIDELITY_LILICH_2FA_SECRET
+    And set "fidelity_creds_prefix": "LILICH" in portfolios.json.
+
+    Use --no-headless to see the browser window for debugging.
+    """
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.fidelity_scraper import (
+        read_fidelity_live, FidelityScraperError, FidelityCredentialError, FidelityAuthError
+    )
+    from src.portfolio.transaction_reader import export_holdings_to_csv
+
+    try:
+        config = get_portfolio_config(portfolio)
+    except Exception as e:
+        raise click.UsageError(f"Unknown portfolio '{portfolio}': {e}")
+
+    creds_prefix = getattr(config, "fidelity_creds_prefix", "") or ""
+    account_filter = getattr(config, "fidelity_account_filter", None)
+
+    click.echo(f"\n🏦 Connecting to Fidelity for portfolio: {portfolio}")
+    if creds_prefix:
+        click.echo(f"   Credentials: FIDELITY_{creds_prefix.upper()}_*")
+    if account_filter:
+        click.echo(f"   Account filter: {account_filter}")
+    click.echo(f"   Headless: {not no_headless}\n")
+
+    try:
+        holdings = read_fidelity_live(
+            portfolio_name=portfolio,
+            creds_prefix=creds_prefix,
+            account_filter=account_filter,
+            headless=not no_headless,
+        )
+    except FidelityCredentialError as e:
+        raise click.UsageError(str(e))
+    except FidelityAuthError as e:
+        raise click.UsageError(f"Authentication failed: {e}")
+    except FidelityScraperError as e:
+        raise click.UsageError(f"Scrape failed: {e}")
+
+    click.echo(f"Fidelity holdings for {portfolio} ({len(holdings)}):\n")
+    click.echo(f"  {'TICKER':<8} {'SHARES':>14} {'AVG COST':>12} {'TOTAL COST':>14}")
+    click.echo("  " + "-" * 54)
+    for h in holdings:
+        click.echo(
+            f"  {h.ticker:<8} {float(h.shares):>14.4f} "
+            f"{float(h.cost_basis):>12.4f} "
+            f"{float(h.total_cost):>14,.2f}"
+        )
+
+    if dry_run:
+        click.echo("\n(Dry run — no files written)")
+        return
+
+    if output:
+        export_holdings_to_csv(holdings, output)
+        click.echo(f"\nPortfolio CSV written to {output}")
+    else:
+        click.echo(f"\n(No --output specified — holdings not written)")
+        click.echo(f"Tip: financial-bytes fidelity-sync --portfolio {portfolio} --output fidelity-{portfolio}.csv")
 
 
 # ── plaid-sync ────────────────────────────────────────────────────
@@ -1348,6 +1628,287 @@ def remove_reminder_cmd(reminder_id: str) -> None:
         click.echo(f"✓ Reminder {reminder_id!r} removed.")
     else:
         click.echo(f"No reminder found with ID {reminder_id!r}.")
+
+
+@cli.command("compare-providers")
+@click.argument("tickers", nargs=-1, required=False)
+@click.option("--portfolio", default=None, help="Load tickers from portfolio CSV")
+@click.option("--portfolio-name", default=None, help="Load tickers from portfolios.json entry")
+@click.option("--output", default=None, help="Write JSON results to this file path")
+def compare_providers(tickers, portfolio, portfolio_name, output):
+    """
+    Compare Alpaca vs yfinance price data for reliability testing.
+
+    Run this BEFORE switching DATA_PROVIDER=alpaca in .env to validate
+    that prices agree within 0.5% tolerance. Requires ALPACA_API_KEY + ALPACA_SECRET_KEY.
+
+    Examples:
+      financial-bytes compare-providers AAPL MSFT GOOG NVDA
+      financial-bytes compare-providers --portfolio portfolio.csv
+      financial-bytes compare-providers --portfolio-name nbossn --output /tmp/provider-cmp.json
+    """
+    import json
+    from src.api.alpaca_client import compare_batch_with_yfinance, AlpacaClientError
+
+    # Resolve ticker list
+    all_tickers = list(tickers) if tickers else []
+
+    if portfolio:
+        from src.portfolio.reader import read_portfolio
+        holdings = read_portfolio(portfolio)
+        all_tickers += [h.ticker for h in holdings if h.ticker not in all_tickers]
+
+    if portfolio_name:
+        from src.portfolio.portfolio_config import load_portfolio_defs
+        from src.scheduler import _resolve_portfolio_csv
+        defs = load_portfolio_defs()
+        pdef = next((d for d in defs if d.name == portfolio_name), None)
+        if pdef is None:
+            click.echo(f"Portfolio {portfolio_name!r} not found in portfolios.json", err=True)
+            raise SystemExit(1)
+        csv_path, tmp_path = _resolve_portfolio_csv(pdef)
+        if csv_path:
+            from src.portfolio.reader import read_portfolio
+            holdings = read_portfolio(csv_path)
+            all_tickers += [h.ticker for h in holdings if h.ticker not in all_tickers]
+            if tmp_path:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    if not all_tickers:
+        click.echo("No tickers specified. Use TICKER args, --portfolio, or --portfolio-name.", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Comparing Alpaca vs yfinance for {len(all_tickers)} tickers...")
+    try:
+        results = compare_batch_with_yfinance(all_tickers)
+    except AlpacaClientError as e:
+        click.echo(f"Alpaca config error: {e}", err=True)
+        click.echo("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env. Get keys at: https://alpaca.markets")
+        raise SystemExit(1)
+
+    # Summary stats
+    agree = sum(1 for r in results if r["agreement"])
+    fail_a = sum(1 for r in results if not r["alpaca_ok"])
+    fail_y = sum(1 for r in results if not r["yfinance_ok"])
+    diverge = [r for r in results if not r["agreement"] and r.get("price_diff_pct") is not None]
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"  Tickers tested:     {len(all_tickers)}")
+    click.echo(f"  Agreement (<0.5%):  {agree}/{len(all_tickers)}")
+    click.echo(f"  Alpaca failures:    {fail_a}")
+    click.echo(f"  yfinance failures:  {fail_y}")
+    click.echo(f"  Price divergences:  {len(diverge)}")
+    click.echo(f"{'='*60}")
+
+    if diverge:
+        click.echo("\nDivergences (>0.5%):")
+        for r in sorted(diverge, key=lambda x: x.get("price_diff_pct", 0), reverse=True):
+            click.echo(
+                f"  {r['ticker']:8s}  Alpaca=${r['alpaca_price']:.4f}  "
+                f"yfinance=${r['yfinance_price']:.4f}  diff={r['price_diff_pct']:.4f}%"
+            )
+
+    if agree == len(all_tickers) and not fail_a:
+        click.echo("\n✅ Full agreement — safe to set DATA_PROVIDER=alpaca in .env")
+    elif agree >= len(all_tickers) * 0.95:
+        click.echo(f"\n⚠️  {len(all_tickers) - agree} disagreement(s) — review before switching")
+    else:
+        click.echo(f"\n❌ {len(all_tickers) - agree} disagreements — investigate before switching provider")
+
+    if output:
+        with open(output, "w") as f:
+            json.dump(results, f, indent=2)
+        click.echo(f"\nResults written to {output}")
+
+
+# ── squeeze-check ─────────────────────────────────────────────────
+@cli.command("squeeze-check")
+@click.argument("ticker")
+@click.option("--no-alert", is_flag=True,
+              help="Run check only; suppress Discord notification even when score >= 7")
+def squeeze_check(ticker: str, no_alert: bool) -> None:
+    """Check short squeeze setup signals for a ticker.
+
+    Scores the likelihood of a short squeeze forming on a 0-10 scale
+    using free data sources (FINRA REGSHO + yfinance). When score >= 7,
+    sends a Discord alert unless --no-alert is set.
+
+    Primary use case: INTU (Lilich Trust, held on squeeze thesis).
+
+    \b
+    Scoring:
+      +2  Days-to-cover > 5
+      +2  Short float > 20%
+      +1  RSI < 35 (oversold)
+      +2  RSI turning from oversold (momentum reversal)
+      +1  Call/put ratio > 1.5
+      +2  Price holding above 52W low despite high short interest
+
+    \b
+    Score bands:
+      7-10  HIGH — flag in newsletter, send Discord alert
+      4-6   MODERATE — monitor weekly
+      0-3   LOW — background monitoring
+
+    \b
+    Examples:
+      financial-bytes squeeze-check INTU
+      financial-bytes squeeze-check INTU --no-alert
+      financial-bytes squeeze-check GME
+    """
+    from src.alerts.short_squeeze_monitor import run_squeeze_check, squeeze_alert
+
+    t = _validate_ticker(ticker)
+    click.echo(f"\nRunning short squeeze check for {t}...")
+
+    result = run_squeeze_check(t)
+
+    # ── Output ──────────────────────────────────────────────────────
+    click.echo(f"\n{'=' * 56}")
+    click.echo(f"  {t} Short Squeeze Monitor — {result.check_date}")
+    click.echo(f"{'=' * 56}")
+    click.echo(f"  Score      : {result.score}/10 — {result.score_label}")
+    click.echo(f"{'─' * 56}")
+
+    short_pct = f"{result.short_float * 100:.1f}%" if result.short_float is not None else "N/A"
+    dtc       = f"{result.days_to_cover:.1f}" if result.days_to_cover is not None else "N/A"
+    rsi       = f"{result.rsi_14:.1f}" if result.rsi_14 is not None else "N/A"
+    cpr       = f"{result.call_put_ratio:.2f}" if result.call_put_ratio is not None else "N/A"
+    price     = f"${result.current_price:.2f}" if result.current_price is not None else "N/A"
+    low_52w   = f"${result.week_52_low:.2f}" if result.week_52_low is not None else "N/A"
+
+    click.echo(f"  Price      : {price}  (52W Low: {low_52w})")
+    click.echo(f"  Short Float: {short_pct}")
+    click.echo(f"  Days-Cover : {dtc}")
+    click.echo(f"  RSI (14d)  : {rsi}  (turning: {'yes' if result.rsi_turning else 'no'})")
+    click.echo(f"  C/P Ratio  : {cpr}")
+    click.echo(f"{'─' * 56}")
+
+    if result.signals:
+        click.echo("  Active signals:")
+        for sig in result.signals:
+            click.echo(f"    + {sig}")
+    else:
+        click.echo("  No active signals above threshold.")
+
+    click.echo(f"{'─' * 56}")
+
+    source_note = (
+        f"FINRA REGSHO ({result.short_data_as_of})"
+        if result.short_data_source == "finra"
+        else "yfinance info dict"
+    )
+    click.echo(f"  Short data : {source_note}")
+
+    # Score breakdown
+    click.echo(f"\n  Score breakdown:")
+    bd = result.score_breakdown
+    click.echo(f"    Days-to-cover >5       : +{bd.get('days_to_cover', 0)}/2")
+    click.echo(f"    Short float >20%       : +{bd.get('short_float', 0)}/2")
+    click.echo(f"    RSI oversold <35       : +{bd.get('rsi_oversold', 0)}/1")
+    click.echo(f"    RSI uptick from oversold: +{bd.get('rsi_uptick', 0)}/2")
+    click.echo(f"    Call/put >1.5          : +{bd.get('call_put_ratio', 0)}/1")
+    click.echo(f"    Price above 52W low    : +{bd.get('price_above_52w_low', 0)}/2")
+    click.echo(f"    TOTAL                  : {result.score}/10")
+
+    click.echo(f"{'=' * 56}\n")
+
+    # ── Discord alert ────────────────────────────────────────────────
+    if result.score >= 7 and not no_alert:
+        sent = squeeze_alert(result)
+        if sent:
+            click.echo(f"Discord alert sent (score {result.score}/10 >= 7 threshold).")
+        else:
+            click.echo("Discord alert failed or DISCORD_WEBHOOK_URL not set.")
+    elif result.score >= 7 and no_alert:
+        click.echo(f"Score {result.score}/10 >= 7 but --no-alert set — Discord skipped.")
+    else:
+        click.echo(f"Score {result.score}/10 < 7 — no Discord alert.")
+
+
+# ── insider-cluster ───────────────────────────────────────────────
+@cli.command("insider-cluster")
+@click.argument("ticker")
+@click.option("--lookback", default=60, show_default=True,
+              help="Days back to search for Form 4 filings.")
+@click.option("--window", default=30, show_default=True,
+              help="Rolling window (days) for cluster detection.")
+@click.option("--min-insiders", default=3, show_default=True,
+              help="Minimum distinct insiders to flag as a cluster.")
+@click.option("--no-alert", is_flag=True,
+              help="Suppress Discord notification even when cluster found.")
+def insider_cluster(ticker: str, lookback: int, window: int, min_insiders: int, no_alert: bool) -> None:
+    """Scan SEC EDGAR Form 4s for insider cluster buys.
+
+    Flags when 3+ distinct insiders at the same company file open-market
+    purchase transactions (code P) within a rolling 30-day window.
+    Queries the free EDGAR REST API — no API key required.
+
+    Academic basis: cluster insider buys predict ~6% excess return over
+    30 days (Lakonishok & Lee 2001; Jeng, Metrick & Zeckhauser 2003).
+
+    \b
+    Signal strength:
+      STRONG    2+ officers buying OR 5+ any insiders in window
+      NOTABLE   1 officer buying OR 3–4 any insiders in window
+      WEAK      3 directors only (counted but lower conviction)
+
+    \b
+    Examples:
+      financial-bytes insider-cluster NVDA
+      financial-bytes insider-cluster AVGO --lookback 90
+      financial-bytes insider-cluster GS --min-insiders 2 --no-alert
+    """
+    from src.alerts.insider_cluster import run_insider_cluster_check, cluster_alert
+
+    t = _validate_ticker(ticker)
+    click.echo(f"\nScanning EDGAR Form 4s for {t} ({lookback}d lookback, {window}d cluster window)...")
+    click.echo("This may take 10–30s depending on filing volume.\n")
+
+    result = run_insider_cluster_check(t, lookback_days=lookback, window_days=window, min_insiders=min_insiders)
+
+    click.echo(f"{'=' * 64}")
+    click.echo(f"  {t} — EDGAR Insider Cluster Scanner")
+    click.echo(f"{'=' * 64}")
+
+    if result is None:
+        click.echo(f"  No cluster detected: < {min_insiders} distinct insiders bought")
+        click.echo(f"  within any {window}-day window over the past {lookback} days.")
+        click.echo(f"{'=' * 64}\n")
+        return
+
+    val_str = f"~${result.total_value:,.0f}" if result.total_value else "value unspecified"
+    click.echo(f"  🏛 CLUSTER DETECTED — {result.signal_strength}")
+    click.echo(f"{'─' * 64}")
+    click.echo(f"  Insiders (distinct) : {result.insider_count}")
+    click.echo(f"  Officers buying     : {result.officer_count}")
+    click.echo(f"  Total shares bought : {result.total_shares:,.0f}")
+    click.echo(f"  Estimated value     : {val_str}")
+    click.echo(f"  Window              : {result.window_start}  →  {result.window_end}")
+    click.echo(f"{'─' * 64}")
+    click.echo(f"  Transaction detail:")
+    seen: set[str] = set()
+    for txn in sorted(result.transactions, key=lambda x: x.transaction_date, reverse=True):
+        key = f"{txn.insider_name}-{txn.transaction_date}"
+        if key in seen:
+            continue
+        seen.add(key)
+        val = f"${txn.dollar_value:,.0f}" if txn.dollar_value else "—"
+        click.echo(
+            f"    {txn.transaction_date}  {txn.insider_name.title():<30} "
+            f"{txn.role:<22}  {txn.shares:>10,.0f} sh  {val}"
+        )
+    click.echo(f"{'=' * 64}\n")
+
+    if not no_alert:
+        cluster_alert(result)
+        click.echo("Discord alert sent (or DISCORD_WEBHOOK_URL not set — check logs).")
+    else:
+        click.echo("--no-alert set — Discord notification skipped.")
 
 
 if __name__ == "__main__":
