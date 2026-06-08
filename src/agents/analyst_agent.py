@@ -2,6 +2,7 @@
 import asyncio
 import json
 import random
+import shutil
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +23,8 @@ SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "analyst_system.txt").read_
 USER_PROMPT_TEMPLATE = (Path(__file__).parent / "prompts" / "analyst_user.txt").read_text()
 
 MODEL = "claude-haiku-4-5-20251001"
+# Resolve full path so daemon processes that don't inherit ~/.local/bin in PATH can find claude
+_CLAUDE_BIN = shutil.which("claude") or "/home/nboss/.local/bin/claude"
 
 
 class AnalystReport(BaseModel):
@@ -180,7 +183,7 @@ def _is_rate_limit_error(stderr: str) -> bool:
     reraise=True,
 )
 def _call_claude(user_prompt: str) -> str:
-    cmd = ["claude", "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    cmd = [_CLAUDE_BIN, "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
     if settings.claude_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     result = subprocess.run(cmd, input=user_prompt, capture_output=True, text=True, timeout=180)
@@ -250,7 +253,7 @@ async def _call_claude_async(user_prompt: str) -> str:
     for attempt in range(5):
         try:
             cmd = [
-                "claude", "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT,
+                _CLAUDE_BIN, "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT,
             ]
             if settings.claude_skip_permissions:
                 cmd.append("--dangerously-skip-permissions")
