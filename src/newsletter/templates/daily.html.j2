@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% if portfolio_label and portfolio_label != 'Portfolio' %}{{ portfolio_label }} · {% endif %}Financial Bytes — {{ report.report_date.strftime('%B %d, %Y') }}</title>
+{% if plotly_cdn_script %}{{ plotly_cdn_script | safe }}{% endif %}
 <style>
   /* ── Reset & Base ─────────────────────────────────────── */
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -514,7 +515,9 @@
           <div style="font-size:12.5px;color:#78350f;line-height:1.6;">{{ ar.tax_note }}</div>
         </div>
         {% endif %}
-        {% if ar.chart_daily_url or ar.chart_weekly_url %}
+        {% if ar.interactive_chart_html %}
+        {{ ar.interactive_chart_html | safe }}
+        {% elif ar.chart_daily_url or ar.chart_weekly_url %}
         <div style="margin-top:14px;display:grid;grid-template-columns:{% if ar.chart_daily_url and ar.chart_weekly_url %}1fr 1fr{% else %}1fr{% endif %};gap:10px;">
           {% if ar.chart_daily_url %}
           <div>
@@ -548,7 +551,70 @@
   </div>
   {% endif %}
 
-  <!-- ⑪ FOOTER: SOURCES + DISCLAIMER -->
+  <!-- ⑪ WATCHLIST RESEARCH — tickers researched but not yet in portfolio -->
+  {% if watchlist_reports %}
+  <div class="section">
+    <div class="section-label">Watchlist Research</div>
+    <div style="font-size:12.5px;color:#64748b;margin-bottom:14px;">
+      Positions researched for potential deployment — not currently held.
+      Each includes technical signals, analyst view, and entry thesis.
+    </div>
+    {% for ar in watchlist_reports %}
+    <details class="stock-card" style="border-color:#e0e7ff;">
+      <summary class="sc-header" style="background:#fafafa;">
+        <span class="sc-ticker" style="color:#4338ca;">{{ ar.ticker }}</span>
+        <div class="sc-badges">
+          <span style="font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#6366f1;background:#e0e7ff;padding:2px 8px;border-radius:99px;">WATCHLIST</span>
+          <span class="signal-badge badge-{{ ar.recommendation | lower }}">{{ ar.recommendation }}</span>
+          <span class="sc-toggle-arrow">▶</span>
+        </div>
+      </summary>
+      <div class="sc-body">
+        <div class="sc-summary">{{ ar.summary }}</div>
+        <div class="sc-meta">
+          {% if ar.price_target %}
+          <div class="sc-meta-item">
+            <div class="mk">Price Target</div>
+            <div class="mv">${{ "%.2f"|format(ar.price_target) }}</div>
+          </div>
+          {% endif %}
+          {% if ar.recommendation_context %}
+          <div class="sc-meta-item" style="grid-column:1/-1;">
+            <div class="mk">Entry Thesis</div>
+            <div class="mv">{{ ar.recommendation_context }}</div>
+          </div>
+          {% endif %}
+        </div>
+        {% if ar.key_catalysts or ar.key_risks %}
+        <div class="sc-lists">
+          {% if ar.key_catalysts %}
+          <div class="sc-list cats">
+            <h4>Catalysts</h4>
+            <ul>{% for c in ar.key_catalysts %}<li>{{ c }}</li>{% endfor %}</ul>
+          </div>
+          {% endif %}
+          {% if ar.key_risks %}
+          <div class="sc-list risks">
+            <h4>Risks</h4>
+            <ul>{% for r in ar.key_risks %}<li>{{ r }}</li>{% endfor %}</ul>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% if ar.interactive_chart_html %}
+        {{ ar.interactive_chart_html | safe }}
+        {% endif %}
+        <div class="confidence-bar">
+          <div class="confidence-fill" style="width:{{ (ar.confidence * 100) | int }}%;background:#6366f1;"></div>
+        </div>
+        <div class="confidence-label">Confidence: {{ (ar.confidence * 100) | int }}% · {{ ar.article_count }} article{{ 's' if ar.article_count != 1 }}</div>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- ⑫ FOOTER: SOURCES + DISCLAIMER -->
   <div class="footer">
     {% if sources %}
     <div class="sources">

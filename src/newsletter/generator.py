@@ -45,7 +45,9 @@ def _render_html(
     analyst_reports: list[AnalystReport],
     snapshot: PortfolioSnapshot,
     portfolio_label: str = "Portfolio",
+    watchlist_reports: list[AnalystReport] | None = None,
 ) -> str:
+    from src.charts.ohlcv_chart import PLOTLY_CDN_SCRIPT
     env = _make_env()
     template = env.get_template("daily.html.j2")
     return template.render(
@@ -55,6 +57,8 @@ def _render_html(
         tax_summary=snapshot.tax_summary,
         sources=_collect_sources(analyst_reports),
         portfolio_label=portfolio_label,
+        watchlist_reports=watchlist_reports or [],
+        plotly_cdn_script=PLOTLY_CDN_SCRIPT,
     )
 
 
@@ -91,6 +95,33 @@ def _render_markdown(
     )
 
 
+def _compute_charts(analyst_reports: list[AnalystReport]) -> None:
+    """Compute interactive Plotly charts for each analyst report in-place.
+
+    Sets report.interactive_chart_html. Errors are caught per-ticker so a
+    single failure never blocks the newsletter. Charts are computed
+    sequentially (yfinance is not thread-safe without care).
+    """
+    try:
+        from src.charts.ohlcv_chart import build_ticker_chart_html
+    except ImportError:
+        logger.warning("generator: plotly not available — skipping interactive charts")
+        return
+
+    for ar in analyst_reports:
+        if ar.interactive_chart_html is not None:
+            continue  # already computed (e.g. resumed run)
+        try:
+            ar.interactive_chart_html = build_ticker_chart_html(
+                ar.ticker, recommendation=ar.recommendation
+            )
+            if ar.interactive_chart_html:
+                logger.debug(f"generator: chart built for {ar.ticker}")
+        except Exception as e:
+            logger.warning(f"generator: chart failed for {ar.ticker}: {e}")
+            ar.interactive_chart_html = ""
+
+
 def generate(
     report: DirectorReport,
     analyst_reports: list[AnalystReport],
@@ -99,10 +130,15 @@ def generate(
     output_dir: Path | None = None,
     portfolio_name: str = "default",
     portfolio_label: str = "Portfolio",
+    watchlist_reports: list[AnalystReport] | None = None,
 ) -> dict[str, Path]:
     """Render HTML + Markdown (+ PDF if WeasyPrint available).
 
     Returns a dict: {"html": Path, "md": Path, "pdf": Path | None}
+
+    Args:
+        watchlist_reports: Optional list of AnalystReport for watch-list
+            tickers (not in portfolio) — rendered in a separate section.
     """
     today = report_date or date.today()
     date_str = today.strftime("%Y-%m-%d")
@@ -113,8 +149,17 @@ def generate(
 
     paths: dict[str, Path | None] = {}
 
+    # ── Compute interactive charts (Plotly) ───────────────────────────────────
+    logger.info("generator: computing interactive charts…")
+    all_for_charts = list(analyst_reports) + (watchlist_reports or [])
+    _compute_charts(all_for_charts)
+
     # ── HTML ──────────────────────────────────────────────
-    html_content = _render_html(report, analyst_reports, snapshot, portfolio_label=portfolio_label)
+    html_content = _render_html(
+        report, analyst_reports, snapshot,
+        portfolio_label=portfolio_label,
+        watchlist_reports=watchlist_reports or [],
+    )
     html_path = out / f"{date_str}.html"
     html_path.write_text(html_content, encoding="utf-8")
     paths["html"] = html_path

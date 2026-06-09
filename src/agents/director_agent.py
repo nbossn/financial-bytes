@@ -1,5 +1,6 @@
 """Financial Director Agent — portfolio synthesis using claude-sonnet-4-6."""
 import json
+import shutil
 import subprocess
 from datetime import date
 from decimal import Decimal
@@ -178,7 +179,9 @@ def _call_claude(user_prompt: str) -> str:
     cap when passed as a -p argument. Passing '-p -' and writing to stdin is
     unbounded and uses the same CLI session auth as analyst agents.
     """
-    cmd = ["claude", "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    # Resolve full path so daemon processes that don't inherit ~/.local/bin in PATH can find claude
+    claude_bin = shutil.which("claude") or "/home/nboss/.local/bin/claude"
+    cmd = [claude_bin, "-p", "-", "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
     if settings.claude_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     result = subprocess.run(
