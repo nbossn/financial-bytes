@@ -314,9 +314,17 @@ def _run_premarket_earnings_check() -> None:
 
 
 def start_scheduler() -> None:
+    import os
+
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
     from src.config import settings
+
+    # The daemon may start with a minimal PATH (no ~/.nvm). Claude CLI's SessionEnd hooks
+    # require node. Inject the nvm node path so all subprocess children inherit it.
+    _nvm_node = os.path.expanduser("~/.nvm/versions/node/v24.14.0/bin")
+    if os.path.isdir(_nvm_node) and _nvm_node not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _nvm_node + ":" + os.environ["PATH"]
 
     # Parse "HH:MM" from settings
     hour, minute = settings.pipeline_start_time.split(":")
