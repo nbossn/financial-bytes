@@ -135,9 +135,10 @@ def _send_group_email(group_name: str, runs: list[tuple]) -> None:
             "cannot build combined email; aborting group send"
         )
         return
+    _replacement = "<body>\n" + "\n".join(combined_bodies) + "\n</body>"
     combined_html = re.sub(
         r"<body[^>]*>.*?</body>",
-        "<body>\n" + "\n".join(combined_bodies) + "\n</body>",
+        lambda _: _replacement,
         first_html,
         count=1,
         flags=re.DOTALL | re.IGNORECASE,
