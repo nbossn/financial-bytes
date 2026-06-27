@@ -187,14 +187,21 @@ def read_transactions(csv_path: str | Path) -> list[Holding]:
 def export_holdings_to_csv(holdings: list[Holding], output_path: str | Path) -> None:
     """Write a holdings list to the portfolio CSV format."""
     path = Path(output_path)
+    has_account = any(getattr(h, 'account_number', None) for h in holdings)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["ticker", "shares", "cost_basis", "purchase_date"])
+        header = ["ticker", "shares", "cost_basis", "purchase_date"]
+        if has_account:
+            header.append("account_number")
+        writer.writerow(header)
         for h in holdings:
-            writer.writerow([
+            row = [
                 h.ticker,
                 str(h.shares),
                 str(h.cost_basis),
                 str(h.purchase_date) if h.purchase_date else "",
-            ])
+            ]
+            if has_account:
+                row.append(getattr(h, 'account_number', None) or "")
+            writer.writerow(row)
     logger.info(f"Exported {len(holdings)} holdings to {path}")

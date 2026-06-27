@@ -59,12 +59,15 @@ def read_portfolio(csv_path: str | Path) -> list[Holding]:
                 # Missing purchase date → sentinel old date (treats position as LTCG)
                 purchase_date = date.fromisoformat(raw_date) if raw_date else date(2000, 1, 1)
 
+                account_number = row.get("account_number", "").strip() or None
+
                 holdings.append(
                     Holding(
                         ticker=ticker,
                         shares=shares,
                         cost_basis=cost_basis,
                         purchase_date=purchase_date,
+                        account_number=account_number,
                     )
                 )
                 logger.debug(f"Loaded holding: {ticker} {shares}@{cost_basis}")
@@ -95,6 +98,7 @@ def save_portfolio_to_db(holdings: list[Holding], portfolio_name: str = "default
                     shares=holding.shares,
                     cost_basis=holding.cost_basis,
                     purchase_date=holding.purchase_date,
+                    account_number=getattr(holding, 'account_number', None),
                 )
             )
     logger.info(f"Saved {len(holdings)} holdings to database (portfolio: {portfolio_name})")

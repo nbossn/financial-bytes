@@ -9,6 +9,7 @@ class Holding:
     shares: Decimal
     cost_basis: Decimal
     purchase_date: date | None = None
+    account_number: str | None = None
 
     @property
     def total_cost(self) -> Decimal:

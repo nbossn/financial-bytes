@@ -1639,8 +1639,14 @@ def sync_fidelity_raw(
     reader = csv.DictReader(io.StringIO(csv_text))
     for row in reader:
         account_name = row.get("Account Name", row.get("Account Name ", "")).strip()
-        if account_filter and account_filter.lower() not in account_name.lower():
-            continue
+        account_number = row.get("Account Number", "").strip()
+        if account_filter:
+            filters = account_filter if isinstance(account_filter, list) else [account_filter]
+            if not any(
+                f.lower() in account_name.lower() or f.lower() in account_number.lower()
+                for f in filters
+            ):
+                continue
         rows.append(dict(row))
     logger.info(f"[fidelity] Parsed {len(rows)} raw rows for {portfolio_name}")
     return rows

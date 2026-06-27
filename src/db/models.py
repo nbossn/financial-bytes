@@ -34,6 +34,7 @@ class Portfolio(Base):
     cost_basis = Column(Numeric(15, 4), nullable=False)
     purchase_date = Column(Date, nullable=False)
     created_at = Column(DateTime, default=_now)
+    account_number = Column(String(20), nullable=True, index=True)
 
 
 class Article(Base):

@@ -84,10 +84,16 @@ def read_fidelity_positions(
                 skipped.append(symbol_raw)
                 continue
 
-            # Account filter
+            # Account filter — supports str (single) or list[str] (OR logic)
+            # Matches against both Account Name and Account Number (case-insensitive)
             if account_filter:
                 account_name = row.get("Account Name", "")
-                if account_filter.lower() not in account_name.lower():
+                account_number = row.get("Account Number", "")
+                filters = account_filter if isinstance(account_filter, list) else [account_filter]
+                if not any(
+                    f.lower() in account_name.lower() or f.lower() in account_number.lower()
+                    for f in filters
+                ):
                     continue
 
             ticker = _SKIP_PATTERN.sub("", symbol_raw).upper()
@@ -123,12 +129,14 @@ def read_fidelity_positions(
                     skipped.append(ticker)
                     continue
 
+            acct_num = row.get("Account Number", "").strip() or None
             holdings.append(
                 Holding(
                     ticker=ticker,
                     shares=quantity,
                     cost_basis=avg_cost,
                     purchase_date=date.today(),  # Fidelity positions don't include lot dates
+                    account_number=acct_num,
                 )
             )
             logger.debug(f"Loaded Fidelity holding: {ticker} {quantity}@{avg_cost}")
