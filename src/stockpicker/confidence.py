@@ -61,6 +61,9 @@ IC_PRIORS: dict[str, float] = {
     "short_pressure":    0.025,  # short float as market-sentiment deviation read
     "analyst_recom":     0.040,  # finviz consensus recommendation (1=buy..5=sell)
     "quality":           0.030,  # ROE/ROIC/margins composite (Novy-Marx quality)
+    # ── Options-derived (yfinance chain; no key). IV level is a risk input, not
+    #    a directional signal, so only put/call positioning carries a prior. ──
+    "opt_pc_sentiment":  0.020,  # put/call ratio as positioning/sentiment read
 }
 
 # Prior strength = pseudo-count of cross-sections the prior is "worth".

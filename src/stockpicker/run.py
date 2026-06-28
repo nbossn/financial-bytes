@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.stockpicker import sectors, macro, finviz_data
+from src.stockpicker import sectors, macro, finviz_data, options_data
 from src.stockpicker.engine import compute_price_signals_at, cross_sectional_z, PRICE_SIGNALS
 from src.stockpicker.confidence import build_confidence_matrix, IC_PRIORS
 from src.stockpicker.risk import classify_risk
@@ -120,6 +120,14 @@ def main(write_report: bool = True) -> dict:
     n_ok = sum(1 for t in good if fv[t].get("ok"))
     print(f"[run] finviz coverage: {n_ok}/{len(good)} candidates")
 
+    # --- OPTIONS enrichment (yfinance chain: ATM IV, put/call, OI) ---
+    print(f"[run] options/IV enrichment for {len(good)} candidates ...")
+    opt = options_data.enrich_batch(good)
+    n_opt = sum(1 for t in good if opt[t].get("ok"))
+    print(f"[run] options coverage: {n_opt}/{len(good)} candidates")
+    osig = lambda key: {t: options_data.signals(opt[t]).get(key) for t in good}
+    z_pc = _z({t: (v if v is not None else np.nan) for t, v in osig("opt_pc_sentiment").items()})
+
     # finviz-derived cross-sectional signals
     sq_vals = {t: (fv[t]["squeeze"]["score"] if fv[t].get("ok") else np.nan) for t in good}
     fsig = lambda key: {t: (fv[t]["signals"].get(key) if fv[t].get("ok") else None) for t in good}
@@ -147,6 +155,9 @@ def main(write_report: bool = True) -> dict:
         contrib["short_squeeze"] = IC_PRIORS["short_squeeze"] * z_squeeze[t]
         contrib["analyst_recom"] = IC_PRIORS["analyst_recom"] * z_recom[t]
         contrib["quality"] = IC_PRIORS["quality"] * z_quality[t]
+        # options positioning (put/call); IV level is risk-only, not directional
+        comp += IC_PRIORS["opt_pc_sentiment"] * z_pc[t]
+        contrib["opt_pc_sentiment"] = IC_PRIORS["opt_pc_sentiment"] * z_pc[t]
         rp = classify_risk(t, enriched[t]["info"])
         info = enriched[t]["info"]
         sq = fv[t].get("squeeze", {}) if fv[t].get("ok") else {}
@@ -177,6 +188,12 @@ def main(write_report: bool = True) -> dict:
             "finviz_recom": (fv[t]["snapshot"].get("analyst_recom") if fv[t].get("ok") else None),
             "finviz_roe": (fv[t]["snapshot"].get("roe") if fv[t].get("ok") else None),
             "finviz_roic": (fv[t]["snapshot"].get("roic") if fv[t].get("ok") else None),
+            # options fields
+            "atm_iv_pct": (round(opt[t]["atm_iv"] * 100, 1) if opt[t].get("atm_iv") else None),
+            "iv_event_premium": opt[t].get("iv_slope"),
+            "put_call_vol": opt[t].get("put_call_vol"),
+            "put_call_oi": opt[t].get("put_call_oi"),
+            "options_oi": opt[t].get("total_oi"),
         })
 
     records.sort(key=lambda r: r["composite"], reverse=True)
@@ -270,6 +287,14 @@ def render_markdown(out: dict) -> str:
             recom = p.get("finviz_recom")
             L.append(f"  - {sqline}finviz recom {recom if recom is not None else 'n/a'} "
                      f"(1=buy), ROE {p.get('finviz_roe')}% / ROIC {p.get('finviz_roic')}%")
+            iv = p.get("atm_iv_pct")
+            if iv is not None:
+                ep = p.get("iv_event_premium")
+                ep_txt = (f", front-loaded IV (event premium {ep:+.3f})"
+                          if (ep is not None and ep > 0.01) else "")
+                L.append(f"  - options: ATM IV {iv:.0f}%{ep_txt}; put/call "
+                         f"{p.get('put_call_vol')} (vol) / {p.get('put_call_oi')} (OI), "
+                         f"OI {p.get('options_oi')}")
             L.append(f"  - {up}; last surprise "
                      f"{('%+.0f%%' % p['last_surprise_pct']) if p['last_surprise_pct'] is not None else 'n/a'}; "
                      f"{earn}")

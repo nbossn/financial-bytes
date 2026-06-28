@@ -424,7 +424,7 @@
       "income_text": "132.62M",
       "ps_ratio": 0.52,
       "eps_this_year": -34.47,
-      "inst_trans": -1.78,
+      "inst_trans": -1.79,
       "short_ratio": 5.95,
       "perf_half_year": 23.33,
       "sales_text": "3.95B",
@@ -467,7 +467,7 @@
       "prev_close": 69.52,
       "employees": 1660.0,
       "lt_debt_eq": 0.52,
-      "earnings_date": "Apr 22 AMC",
+      "earnings_date": "Jul 22 AMC",
       "sma_200": 17.35,
       "avg_volume_text": "318.87K",
       "current_price_raw": 71.84,
@@ -496,11 +496,11 @@
       "fv_short_pressure": -7.55,
       "fv_momentum": 25.31,
       "fv_growth": -23.52,
-      "fv_inst_flow": -4.43
+      "fv_inst_flow": -4.4399999999999995
     },
     "market_cap": 2069999999.9999998,
     "short_interest": 1900000.0,
-    "earnings_date": "Apr 22 AMC"
+    "earnings_date": "Jul 22 AMC"
   },
   "COLD": {
     "ticker": "COLD",
@@ -726,7 +726,7 @@
       "income_text": "-12.78B",
       "ps_ratio": 58.81,
       "eps_this_year": 413.65,
-      "inst_trans": 7.19,
+      "inst_trans": 7.14,
       "short_ratio": 2.11,
       "perf_half_year": -47.87,
       "sales_text": "490.47M",
@@ -796,7 +796,7 @@
       "fv_short_pressure": -12.39,
       "fv_momentum": -38.08,
       "fv_growth": -60.055,
-      "fv_inst_flow": 6.28
+      "fv_inst_flow": 6.2299999999999995
     },
     "market_cap": 28850000000.0,
     "short_interest": 40880000.0,
@@ -1738,7 +1738,7 @@
       "income_text": "2.09B",
       "ps_ratio": 3.48,
       "eps_this_year": 8.21,
-      "inst_trans": 0.19,
+      "inst_trans": 0.18,
       "short_ratio": 6.92,
       "perf_half_year": 11.11,
       "sales_text": "14.77B",
@@ -1810,7 +1810,7 @@
       "fv_short_pressure": -5.96,
       "fv_momentum": 5.52,
       "fv_growth": 4.3,
-      "fv_inst_flow": -0.8700000000000001
+      "fv_inst_flow": -0.8800000000000001
     },
     "market_cap": 51330000000.0,
     "short_interest": 37160000.0,
@@ -2864,7 +2864,7 @@
       "income_text": "34.60M",
       "ps_ratio": 0.66,
       "eps_this_year": 15.17,
-      "inst_trans": -1.61,
+      "inst_trans": -1.49,
       "short_ratio": 6.25,
       "perf_half_year": 62.59,
       "sales_text": "1.33B",
@@ -2937,7 +2937,7 @@
       "fv_short_pressure": -9.04,
       "fv_momentum": 72.51,
       "fv_growth": 1.6500000000000001,
-      "fv_inst_flow": -1.61
+      "fv_inst_flow": -1.49
     },
     "market_cap": 882860000.0,
     "short_interest": 1490000.0,
@@ -3868,7 +3868,7 @@
       "income_text": "662.71M",
       "ps_ratio": 2.46,
       "eps_this_year": 11.26,
-      "inst_trans": -2.21,
+      "inst_trans": -2.23,
       "short_ratio": 3.04,
       "perf_half_year": 13.46,
       "sales_text": "3.52B",
@@ -3937,7 +3937,7 @@
       "fv_short_pressure": -4.56,
       "fv_momentum": 20.64,
       "fv_growth": 27.985,
-      "fv_inst_flow": -5.42
+      "fv_inst_flow": -5.4399999999999995
     },
     "market_cap": 8670000000.0,
     "short_interest": 10540000.0,
@@ -4051,7 +4051,7 @@
       "perf_week": 5.4,
       "market_cap_text": "79.83B",
       "forward_pe": 29.79,
-      "eps_next_year": 14.55,
+      "eps_next_year": 14.61,
       "insider_trans": -0.12,
       "shares_float_text": "251.76M",
       "perf_month": 8.02,
@@ -4063,7 +4063,7 @@
       "perf_quarter": 7.34,
       "income_text": "2.11B",
       "ps_ratio": 4.85,
-      "eps_this_year": 10.4,
+      "eps_this_year": 10.34,
       "inst_trans": -1.3,
       "short_ratio": 2.24,
       "perf_half_year": 7.14,
@@ -4417,7 +4417,7 @@
       "prev_close": 22.42,
       "employees": 133030.0,
       "lt_debt_eq": 1.37,
-      "earnings_date": "Apr 22 BMO",
+      "earnings_date": "Jul 22 BMO",
       "sma_200": -12.28,
       "avg_volume_text": "42.22M",
       "current_price_raw": 22.72,
@@ -4450,7 +4450,7 @@
     },
     "market_cap": 157870000000.0,
     "short_interest": 125380000.0,
-    "earnings_date": "Apr 22 BMO"
+    "earnings_date": "Jul 22 BMO"
   },
   "SNOW": {
     "ticker": "SNOW",
@@ -4613,7 +4613,7 @@
       "eps_qoq": 1372.09,
       "sma_20": 9.36,
       "beta": 2.08,
-      "target_price": 1489.02,
+      "target_price": 1500.65,
       "debt_eq": 0.06,
       "sales_qoq": 345.72,
       "sma_50": 41.16,
@@ -4645,7 +4645,7 @@
     },
     "signals": {
       "fv_recom": 1.71,
-      "fv_target_upside": 31.500534296539,
+      "fv_target_upside": 32.527620040094334,
       "fv_quality": 58.92,
       "fv_short_pressure": -3.7,
       "fv_momentum": 218.55,
@@ -4884,7 +4884,7 @@
       "income_text": "-3.17B",
       "ps_ratio": 12.0,
       "eps_this_year": 156.05,
-      "inst_trans": 1.55,
+      "inst_trans": 1.53,
       "short_ratio": 1.07,
       "perf_half_year": 253.01,
       "sales_text": "53.76B",
@@ -4956,7 +4956,7 @@
       "fv_short_pressure": -3.39,
       "fv_momentum": 190.98,
       "fv_growth": -140.43,
-      "fv_inst_flow": 1.54
+      "fv_inst_flow": 1.52
     },
     "market_cap": 644940000000.0,
     "short_interest": 143870000.0,
@@ -5089,7 +5089,7 @@
       "income_text": "573.70M",
       "ps_ratio": 5.86,
       "eps_this_year": 31.19,
-      "inst_trans": -2.31,
+      "inst_trans": -2.32,
       "short_ratio": 2.68,
       "perf_half_year": 62.78,
       "sales_text": "6.06B",
@@ -5162,7 +5162,7 @@
       "fv_short_pressure": -8.01,
       "fv_momentum": 48.92,
       "fv_growth": 48.665000000000006,
-      "fv_inst_flow": -7.359999999999999
+      "fv_inst_flow": -7.369999999999999
     },
     "market_cap": 35530000000.0,
     "short_interest": 31180000.0,
