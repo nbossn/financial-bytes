@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.stockpicker import sectors, macro, finviz_data, options_data
+from src.stockpicker import sectors, macro, finviz_data, options_data, ledger
 from src.stockpicker.engine import compute_price_signals_at, cross_sectional_z, PRICE_SIGNALS
 from src.stockpicker.confidence import build_confidence_matrix, IC_PRIORS
 from src.stockpicker.risk import classify_risk
@@ -194,9 +194,18 @@ def main(write_report: bool = True) -> dict:
             "put_call_vol": opt[t].get("put_call_vol"),
             "put_call_oi": opt[t].get("put_call_oi"),
             "options_oi": opt[t].get("total_oi"),
+            "contrib": {k: round(float(v), 4) for k, v in contrib.items()},
         })
 
     records.sort(key=lambda r: r["composite"], reverse=True)
+
+    # prediction ledger — record ALL candidates (not just picks) so signal IC can
+    # be measured later against realized forward returns.
+    try:
+        n_rec = ledger.record(records, as_of=scan["date_end"])
+        print(f"[run] ledger: recorded {n_rec} predictions for {scan['date_end']}")
+    except Exception as e:
+        print(f"[run] ledger record skipped: {e}")
 
     # Spread across risk spectrum. Prefer POSITIVE-composite names; only backfill
     # with negative-composite names if a tier can't be filled otherwise (and they

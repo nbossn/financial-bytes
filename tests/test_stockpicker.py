@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.stockpicker import finviz_data, options_data, confidence
+from src.stockpicker import finviz_data, options_data, confidence, ledger
 
 
 # ─────────────────────────── finviz squeeze_score ───────────────────────────
@@ -162,3 +162,48 @@ def test_priors_include_options_and_finviz_signals():
 
 def test_all_priors_positive():
     assert all(v > 0 for v in confidence.IC_PRIORS.values())
+
+
+# ─────────────────────────── prediction ledger ──────────────────────────
+
+@pytest.fixture
+def tmp_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(ledger, "PRED_PATH", tmp_path / "predictions.jsonl")
+    monkeypatch.setattr(ledger, "SCORED_PATH", tmp_path / "scored.jsonl")
+    return tmp_path
+
+
+def _rec(ticker, comp, contrib):
+    return {"ticker": ticker, "composite": comp, "last_close": 100.0,
+            "risk_tier": "MODERATE", "contrib": contrib}
+
+
+def test_ledger_record_writes_rows(tmp_ledger):
+    n = ledger.record([_rec("AAA", 1.0, {"momentum_12_1": 0.5})], as_of="2026-06-01")
+    assert n == 1
+    rows = ledger._read_jsonl(ledger.PRED_PATH)
+    assert len(rows) == 1 and rows[0]["ticker"] == "AAA"
+    assert rows[0]["contrib"]["momentum_12_1"] == 0.5
+
+
+def test_ledger_record_idempotent_per_date(tmp_ledger):
+    ledger.record([_rec("AAA", 1.0, {}), _rec("BBB", 0.5, {})], as_of="2026-06-01")
+    # re-running the same date replaces, doesn't duplicate
+    ledger.record([_rec("AAA", 2.0, {})], as_of="2026-06-01")
+    rows = ledger._read_jsonl(ledger.PRED_PATH)
+    aaa = [r for r in rows if r["ticker"] == "AAA"]
+    assert len(aaa) == 1 and aaa[0]["composite"] == 2.0
+    assert not any(r["ticker"] == "BBB" for r in rows)  # old date wiped
+
+
+def test_ledger_record_keeps_other_dates(tmp_ledger):
+    ledger.record([_rec("AAA", 1.0, {})], as_of="2026-06-01")
+    ledger.record([_rec("BBB", 1.0, {})], as_of="2026-06-02")
+    dates = {r["as_of"] for r in ledger._read_jsonl(ledger.PRED_PATH)}
+    assert dates == {"2026-06-01", "2026-06-02"}
+
+
+def test_signal_ic_insufficient_rows_returns_empty(tmp_ledger):
+    ledger._write_jsonl(ledger.SCORED_PATH,
+                        [{"composite": 1.0, "r5": 0.02, "contrib": {"x": 0.1}}])
+    assert ledger.signal_ic("r5") == {}
