@@ -102,7 +102,7 @@
       "sector": "Industrials",
       "ret_1d": -0.017816091248077304,
       "ret_5d": 0.002174969455112937,
-      "ret_20d": 0.05272417571633384,
+      "ret_20d": 0.07093478699083304,
       "n": 52,
       "total_cap": 4026270863296.0,
       "leaders": [
@@ -517,6 +517,18 @@
       "day_change_pct": 0.5875130919244409
     },
     {
+      "ticker": "HON",
+      "sector": "Industrials",
+      "reason": "high_volatility",
+      "deviation_z": 0.0,
+      "ret_5d_pct": 1.3973242582369982,
+      "sector_ret_5d_pct": null,
+      "overnight_gap_vol_pct": 18.49632903002278,
+      "realized_vol_30d_pct": 18.412182981236157,
+      "last_close": 464.4200134277344,
+      "day_change_pct": 0.4194781169609474
+    },
+    {
       "ticker": "KFRC",
       "sector": "Industrials",
       "reason": "sector_leader",
@@ -827,18 +839,6 @@
       "realized_vol_30d_pct": 5.094565037086368,
       "last_close": 267.7200012207031,
       "day_change_pct": 4.959420368230516
-    },
-    {
-      "ticker": "ACN",
-      "sector": "Technology",
-      "reason": "high_volatility",
-      "deviation_z": 0.0,
-      "ret_5d_pct": 0.781366107497683,
-      "sector_ret_5d_pct": null,
-      "overnight_gap_vol_pct": 3.6976852823787367,
-      "realized_vol_30d_pct": 4.318902839667686,
-      "last_close": 128.97999572753906,
-      "day_change_pct": 2.5115212528845854
     }
   ],
   "candidate_tickers": [
@@ -870,6 +870,7 @@
     "AXON",
     "LGIH",
     "TGT",
+    "HON",
     "KFRC",
     "QLYS",
     "MO",
@@ -895,7 +896,6 @@
     "ON",
     "AMKR",
     "FORM",
-    "INTU",
-    "ACN"
+    "INTU"
   ]
 }
