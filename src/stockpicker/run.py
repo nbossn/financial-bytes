@@ -43,17 +43,30 @@ VAULT_REPORT_DIR = Path("/mnt/c/Users/nicky/Dopple/Projects/stock-picker")
 N_PICKS = 20
 
 
-def load_weights() -> dict:
-    """Load cached confidence weights; fall back to priors if not yet calibrated."""
+def load_weights() -> tuple[dict, str]:
+    """Load confidence weights. Preference order:
+    1. running_weights.json — ledger-derived, self-updating from realized outcomes
+       (only once it has enough measured obs to beat the priors).
+    2. universe_scores.json — the heavy IC backtest cache.
+    3. literature priors — cold start.
+    Returns (weights, source_label).
+    """
+    rw = DATA_DIR / "running_weights.json"
+    if rw.exists():
+        try:
+            d = json.loads(rw.read_text())
+            if d.get("using_measured") and d.get("weights"):
+                return d["weights"], f"running_weights (measured, {d.get('max_obs_per_signal')} obs)"
+        except Exception:
+            pass
     p = DATA_DIR / "universe_scores.json"
     if p.exists():
         try:
-            return json.loads(p.read_text())["weights"]
+            return json.loads(p.read_text())["weights"], "universe_scores backtest"
         except Exception:
             pass
-    # priors-only fallback
     total = sum(IC_PRIORS.values())
-    return {k: v / total for k, v in IC_PRIORS.items()}
+    return {k: v / total for k, v in IC_PRIORS.items()}, "literature priors"
 
 
 def main(write_report: bool = True) -> dict:
@@ -77,7 +90,8 @@ def main(write_report: bool = True) -> dict:
     cur = compute_price_signals_at(close, open_, t_now)
     z_price = {k: cross_sectional_z(v) for k, v in cur.items()}
 
-    weights = load_weights()
+    weights, weights_source = load_weights()
+    print(f"[run] weights source: {weights_source}")
 
     # --- enrich candidates (fundamentals + earnings) ---
     print(f"[run] enriching {len(good)} candidates ...")
@@ -233,6 +247,7 @@ def main(write_report: bool = True) -> dict:
         "as_of_date": scan["date_end"],
         "macro": mac, "sectors": scan["sectors"],
         "n_candidates": len(good), "tier_counts": counts, "picks": picks,
+        "weights_source": weights_source,
     }
     (DATA_DIR / "final_picks.json").write_text(json.dumps(out, indent=2, default=str))
     print(f"\n[run] tier counts: {counts}")
@@ -248,12 +263,134 @@ def main(write_report: bool = True) -> dict:
     return out
 
 
+_REASON_PHRASE = {
+    "sector_leader": "leading its sector's move",
+    "sector_laggard": "lagging its sector (a potential catch-up / mean-reversion candidate)",
+    "high_volatility": "flagged by elevated volatility and overnight gaps",
+}
+
+
+def _fmt_pe(v):
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return "n/a"
+_TIER_STANCE = {
+    "CONSERVATIVE": "a core, lower-beta holding",
+    "MODERATE": "a balanced risk/reward position",
+    "AGGRESSIVE": "a higher-volatility, higher-conviction trade",
+    "SPECULATIVE": "a small, speculative position sized for the risk",
+}
+
+
+def _pick_narrative(p: dict, mac: dict) -> str:
+    """A few plain-English sentences: the context + the recommended play."""
+    t = p["ticker"]; name = p["name"]; tier = p["risk_tier"]
+    s: list[str] = []
+
+    # 1) what it is + why it surfaced
+    reason = _REASON_PHRASE.get(p.get("selection_reason"), "flagged by the screen")
+    verdict = ("the model's composite favors it" if p["composite"] > 0
+               else "the model does **not** favor it (negative score)")
+    s.append(f"**{name} ({t})** is in the {p['sector']} sector and screened in as a "
+             f"**{tier.lower()}** name, {reason}. With a composite of "
+             f"**{p['composite']:+.2f}**, {verdict}.")
+
+    # 2) valuation + quality
+    pe, fpe = p.get("trailing_pe"), p.get("forward_pe")
+    val_bits = []
+    if pe and fpe and fpe < pe:
+        val_bits.append(f"its P/E compresses from {_fmt_pe(pe)} to {_fmt_pe(fpe)} forward, "
+                        f"implying the market expects earnings growth")
+    elif pe and fpe:
+        val_bits.append(f"it trades at a {_fmt_pe(pe)} P/E ({_fmt_pe(fpe)} forward)")
+    roe = p.get("finviz_roe")
+    if roe is not None:
+        val_bits.append(f"return-on-equity is {roe}%")
+    if val_bits:
+        s.append("On fundamentals, " + "; ".join(val_bits) + ".")
+
+    # 3) short / squeeze context
+    sq = p.get("squeeze_score")
+    if sq is not None:
+        if sq >= 60:
+            s.append(f"Short positioning is notable: a squeeze-setup score of "
+                     f"{sq:.0f}/100 ({p.get('short_float_pct')}% of float short, "
+                     f"{p.get('short_ratio')} days to cover) — a name where a sharp "
+                     f"move up could force shorts to buy back in.")
+        elif sq >= 35:
+            s.append(f"There's moderate short interest (squeeze score {sq:.0f}/100, "
+                     f"{p.get('short_float_pct')}% short float) — worth watching but "
+                     f"not an outright squeeze.")
+        else:
+            s.append(f"Short interest is light (squeeze score {sq:.0f}/100), so this is "
+                     f"a momentum/fundamentals story rather than a squeeze.")
+
+    # 4) options / volatility
+    iv = p.get("atm_iv_pct")
+    if iv is not None:
+        pc = p.get("put_call_vol")
+        pos = ("heavier put buying (defensive/bearish positioning)" if (pc and pc > 1.2)
+               else "heavier call buying (bullish positioning)" if (pc and pc < 0.8)
+               else "balanced options positioning")
+        ev = p.get("iv_event_premium")
+        ev_txt = (" Front-month volatility is elevated versus later months, which usually "
+                  "means an event (often earnings) is priced in soon." if (ev and ev > 0.01) else "")
+        s.append(f"Options imply a ~{iv:.0f}% annualized move with {pos}.{ev_txt}")
+
+    # 5) earnings catalyst
+    if p.get("days_to_earnings") is not None:
+        s.append(f"Earnings land in ~{p['days_to_earnings']} days ({p.get('next_earnings')}), "
+                 f"a near-term catalyst (and risk) to size around.")
+
+    # 6) the play
+    upside = (f" Analysts' mean target sits {p['revision_upside_pct']:+.0f}% from here."
+              if p.get("revision_upside_pct") is not None else "")
+    if p["composite"] > 0:
+        play = (f"**The play:** treat {t} as {_TIER_STANCE.get(tier, 'a position')} — the "
+                f"signals line up on the long side.{upside}")
+    else:
+        play = (f"**The play:** {t} only fills the {tier.lower()} slot; the model is lukewarm "
+                f"to negative here, so it's a watch-list name rather than a buy.{upside}")
+    s.append(play)
+    return " ".join(s)
+
+
 def render_markdown(out: dict) -> str:
     mac = out["macro"]
     L = []
     L.append(f"# Stock Picker — {out['as_of_date']}\n")
     L.append(f"*Generated {out['generated_at'][:16]}Z · sector-driven · "
-             f"{out['n_candidates']} candidates from sector deviation + volatility*\n")
+             f"{out['n_candidates']} candidates from sector deviation + volatility · "
+             f"weights: {out.get('weights_source', 'n/a')}*\n")
+
+    # how-to-read legend
+    L.append("> **How to read this report.** It works top-down: the **global macro** "
+             "regime sets the risk backdrop, the **sector heatmap** shows where money is "
+             "rotating, then each **pick** is a name that stood out within that flow. "
+             "The **composite** is the model's overall score (higher = more favored; a "
+             "negative score means the model is *not* keen and the name is only filling a "
+             "risk slot). Each pick has a plain-English **summary + the play**, followed "
+             "by the underlying *Details*. Risk tiers: 🟢 conservative → 🔴 speculative. "
+             "*Analysis only — not financial advice.*\n")
+
+    # accuracy callout (filled once realized outcomes accrue)
+    try:
+        from src.stockpicker import accuracy as _acc
+        ca = _acc.composite_accuracy()
+        if ca.get("n", 0) > 0:
+            ls = (f", long/short spread {ca['long_short_spread']*100:+.2f}%"
+                  if ca.get("long_short_spread") is not None else "")
+            L.append(f"> 📊 **Track record so far ({ca['n']} scored picks, "
+                     f"{ca['n_dates']} dates):** {ca['hit_rate']*100:.0f}% directional hit "
+                     f"rate, rank IC {ca.get('rank_ic', float('nan')):+.3f}{ls}. "
+                     f"Full breakdown → [[Projects/stock-picker/SCORECARD]].\n")
+        else:
+            L.append("> 📊 **Track record:** accruing — predictions are logged each run and "
+                     "scored against realized 1/5/20-day returns after ~5 trading days. "
+                     "See [[Projects/stock-picker/SCORECARD]].\n")
+    except Exception:
+        pass
     L.append(f"\n## Global macro — regime: **{mac['regime'].upper()}** "
              f"(breadth {mac['breadth']*100:.0f}% regions up)\n")
     for region, r in mac["regions"].items():
@@ -283,9 +420,16 @@ def render_markdown(out: dict) -> str:
                     if p["days_to_earnings"] is not None else "no date")
             up = (f"{p['revision_upside_pct']:+.0f}% target upside"
                   if p["revision_upside_pct"] is not None else "no target")
-            L.append(f"- **{p['ticker']}** ({p['name']}) — comp **{p['composite']:+.2f}**, "
-                     f"${p['last_close']:.2f} · {p['sector']}")
-            L.append(f"  - selected as *{p['selection_reason']}* (sector dev "
+
+            # ── human-readable header + narrative ──
+            L.append(f"\n#### {emoji[tier]} {p['ticker']} — {p['name']}")
+            L.append(f"`composite {p['composite']:+.2f}` · ${p['last_close']:.2f} · "
+                     f"{p['sector']} · {p['selection_reason']}\n")
+            L.append(_pick_narrative(p, mac))
+
+            # ── the detail (kept verbatim, now under a 'Details' line) ──
+            L.append("\n*Details:*")
+            L.append(f"- selected as *{p['selection_reason']}* (sector dev "
                      f"{p['deviation_z']:+.2f}); P/E {pe} → fwd {fpe}, beta {p['beta']}, "
                      f"onVol {p.get('overnight_gap_vol_pct') or 0:.1f}%")
             sq = p.get("squeeze_score")
@@ -294,23 +438,23 @@ def render_markdown(out: dict) -> str:
                 sqline = (f"squeeze {sq:.0f}/100 ({p.get('squeeze_label')}), "
                           f"short float {p.get('short_float_pct')}% / {p.get('short_ratio')}d-cover; ")
             recom = p.get("finviz_recom")
-            L.append(f"  - {sqline}finviz recom {recom if recom is not None else 'n/a'} "
+            L.append(f"- {sqline}finviz recom {recom if recom is not None else 'n/a'} "
                      f"(1=buy), ROE {p.get('finviz_roe')}% / ROIC {p.get('finviz_roic')}%")
             iv = p.get("atm_iv_pct")
             if iv is not None:
                 ep = p.get("iv_event_premium")
                 ep_txt = (f", front-loaded IV (event premium {ep:+.3f})"
                           if (ep is not None and ep > 0.01) else "")
-                L.append(f"  - options: ATM IV {iv:.0f}%{ep_txt}; put/call "
+                L.append(f"- options: ATM IV {iv:.0f}%{ep_txt}; put/call "
                          f"{p.get('put_call_vol')} (vol) / {p.get('put_call_oi')} (OI), "
                          f"OI {p.get('options_oi')}")
-            L.append(f"  - {up}; last surprise "
+            L.append(f"- {up}; last surprise "
                      f"{('%+.0f%%' % p['last_surprise_pct']) if p['last_surprise_pct'] is not None else 'n/a'}; "
                      f"{earn}")
             if p.get("data_quality_flags"):
-                L.append(f"  - ⚠️ **data-quality:** {'; '.join(p['data_quality_flags'])}")
+                L.append(f"- ⚠️ **data-quality:** {'; '.join(p['data_quality_flags'])}")
             if p["composite"] < 0:
-                L.append(f"  - ⚠️ **negative composite** — model does not favor this; "
+                L.append(f"- ⚠️ **negative composite** — model does not favor this; "
                          f"shown only to fill the {p['risk_tier'].lower()} slot")
     L.append("\n---\n*Methodology: [[Projects/stock-picker/METHODOLOGY]] · "
              "Data plan: [[Projects/stock-picker/DATA-SOURCES]] · "

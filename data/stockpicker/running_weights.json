@@ -1,0 +1,175 @@
+{
+  "generated_at": "2026-06-29",
+  "horizon": "r5",
+  "max_obs_per_signal": 0,
+  "using_measured": false,
+  "weights": {
+    "momentum_12_1": 0.08181818181818183,
+    "reversal_5d": 0.06363636363636364,
+    "overnight_drift": 0.07272727272727274,
+    "earnings_sue": 0.1090909090909091,
+    "pead_drift": 0.09090909090909093,
+    "revision_proxy": 0.07272727272727274,
+    "sentiment": 0.04545454545454546,
+    "insider_cluster": 0.06363636363636364,
+    "vol_signal": 0.03636363636363637,
+    "technical_52w": 0.07272727272727274,
+    "short_squeeze": 0.08181818181818183,
+    "short_pressure": 0.04545454545454546,
+    "analyst_recom": 0.07272727272727274,
+    "quality": 0.05454545454545455,
+    "opt_pc_sentiment": 0.03636363636363637
+  },
+  "rows": [
+    {
+      "signal": "earnings_sue",
+      "ic_measured": NaN,
+      "ic_prior": 0.06,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.06,
+      "hit_rate": NaN,
+      "weight": 0.1090909090909091
+    },
+    {
+      "signal": "pead_drift",
+      "ic_measured": NaN,
+      "ic_prior": 0.05,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.05,
+      "hit_rate": NaN,
+      "weight": 0.09090909090909093
+    },
+    {
+      "signal": "momentum_12_1",
+      "ic_measured": NaN,
+      "ic_prior": 0.045,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.045,
+      "hit_rate": NaN,
+      "weight": 0.08181818181818183
+    },
+    {
+      "signal": "short_squeeze",
+      "ic_measured": NaN,
+      "ic_prior": 0.045,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.045,
+      "hit_rate": NaN,
+      "weight": 0.08181818181818183
+    },
+    {
+      "signal": "overnight_drift",
+      "ic_measured": NaN,
+      "ic_prior": 0.04,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.04,
+      "hit_rate": NaN,
+      "weight": 0.07272727272727274
+    },
+    {
+      "signal": "revision_proxy",
+      "ic_measured": NaN,
+      "ic_prior": 0.04,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.04,
+      "hit_rate": NaN,
+      "weight": 0.07272727272727274
+    },
+    {
+      "signal": "technical_52w",
+      "ic_measured": NaN,
+      "ic_prior": 0.04,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.04,
+      "hit_rate": NaN,
+      "weight": 0.07272727272727274
+    },
+    {
+      "signal": "analyst_recom",
+      "ic_measured": NaN,
+      "ic_prior": 0.04,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.04,
+      "hit_rate": NaN,
+      "weight": 0.07272727272727274
+    },
+    {
+      "signal": "reversal_5d",
+      "ic_measured": NaN,
+      "ic_prior": 0.035,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.035,
+      "hit_rate": NaN,
+      "weight": 0.06363636363636364
+    },
+    {
+      "signal": "insider_cluster",
+      "ic_measured": NaN,
+      "ic_prior": 0.035,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.035,
+      "hit_rate": NaN,
+      "weight": 0.06363636363636364
+    },
+    {
+      "signal": "quality",
+      "ic_measured": NaN,
+      "ic_prior": 0.03,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.03,
+      "hit_rate": NaN,
+      "weight": 0.05454545454545455
+    },
+    {
+      "signal": "sentiment",
+      "ic_measured": NaN,
+      "ic_prior": 0.025,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.025,
+      "hit_rate": NaN,
+      "weight": 0.04545454545454546
+    },
+    {
+      "signal": "short_pressure",
+      "ic_measured": NaN,
+      "ic_prior": 0.025,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.025,
+      "hit_rate": NaN,
+      "weight": 0.04545454545454546
+    },
+    {
+      "signal": "vol_signal",
+      "ic_measured": NaN,
+      "ic_prior": 0.02,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.02,
+      "hit_rate": NaN,
+      "weight": 0.03636363636363637
+    },
+    {
+      "signal": "opt_pc_sentiment",
+      "ic_measured": NaN,
+      "ic_prior": 0.02,
+      "n": 0,
+      "lambda_prior": 1.0,
+      "ic_shrunk": 0.02,
+      "hit_rate": NaN,
+      "weight": 0.03636363636363637
+    }
+  ]
+}

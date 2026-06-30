@@ -20,17 +20,18 @@ cd "$REPO"
   echo "[stockpicker-nightly] scoring ledger (realized returns) ..."
   PYTHONPATH=. "$PY" -m src.stockpicker.ledger score || echo "  (ledger score non-fatal error)"
 
-  # 2) run the full pipeline (records tonight's predictions into the ledger)
+  # 2) recompute accuracy + running weights from realized outcomes, write scorecard.
+  #    Runs BEFORE the pipeline so the run picks up the freshly updated weights.
+  echo "[stockpicker-nightly] updating accuracy scorecard + running weights ..."
+  PYTHONPATH=. "$PY" -m src.stockpicker.accuracy || echo "  (accuracy non-fatal error)"
+
+  # 3) run the full pipeline (uses running_weights.json; records tonight's predictions)
   echo "[stockpicker-nightly] running pipeline ..."
   PYTHONPATH=. "$PY" -m src.stockpicker.run
 
-  # 3) regenerate the squeeze map for the run date
+  # 4) regenerate the squeeze map for the run date
   echo "[stockpicker-nightly] regenerating squeeze map ..."
   PYTHONPATH=. "$PY" -m src.stockpicker.viz || echo "  (viz non-fatal error)"
-
-  # 4) show the measured IC so far (no-op until >=10 scored rows accrue)
-  echo "[stockpicker-nightly] measured signal IC (r5):"
-  PYTHONPATH=. "$PY" -m src.stockpicker.ledger ic r5 || true
 
   echo "[stockpicker-nightly] done $(date '+%Y-%m-%d %H:%M:%S %Z')"
 } >> "$LOG" 2>&1

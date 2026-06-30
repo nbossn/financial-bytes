@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.stockpicker import finviz_data, options_data, confidence, ledger
+from src.stockpicker import finviz_data, options_data, confidence, ledger, accuracy
 
 
 # ─────────────────────────── finviz squeeze_score ───────────────────────────
@@ -207,3 +207,58 @@ def test_signal_ic_insufficient_rows_returns_empty(tmp_ledger):
     ledger._write_jsonl(ledger.SCORED_PATH,
                         [{"composite": 1.0, "r5": 0.02, "contrib": {"x": 0.1}}])
     assert ledger.signal_ic("r5") == {}
+
+
+# ─────────────────────────── accuracy + running weights ──────────────────────
+
+@pytest.fixture
+def tmp_accuracy(tmp_ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(accuracy, "WEIGHTS_PATH", tmp_path / "rw.json")
+    monkeypatch.setattr(accuracy, "SCORECARD_PATH", tmp_path / "SCORECARD.md")
+    monkeypatch.setattr(accuracy, "VAULT_DIR", tmp_path)
+    return tmp_path
+
+
+def test_accuracy_empty_returns_n_zero(tmp_accuracy):
+    assert accuracy.composite_accuracy("r5") == {"n": 0}
+
+
+def test_running_weights_equal_priors_when_no_data(tmp_accuracy):
+    rw = accuracy.running_weights("r5", persist=False)
+    assert rw["using_measured"] is False
+    # with no measured data, weights are the normalized priors
+    total = sum(confidence.IC_PRIORS.values())
+    assert rw["weights"]["earnings_sue"] == pytest.approx(
+        confidence.IC_PRIORS["earnings_sue"] / total, abs=1e-6)
+    assert abs(sum(rw["weights"].values()) - 1.0) < 1e-6
+
+
+def test_running_weights_shift_toward_predictive_signal(tmp_accuracy):
+    # momentum perfectly predicts realized; quality is pure noise
+    rows = []
+    for d in ("2026-06-10", "2026-06-12"):
+        for i in range(15):
+            m = (i - 7) / 7.0
+            rows.append({"as_of": d, "ticker": f"T{i}", "composite": m,
+                         "last_close": 100.0, "risk_tier": "MODERATE",
+                         "contrib": {"momentum_12_1": m, "quality": ((i * 7) % 5 - 2) / 5.0},
+                         "r1": m * 0.01, "r5": m * 0.05, "r20": m * 0.1})
+    ledger._write_jsonl(ledger.SCORED_PATH, rows)
+    rw = accuracy.running_weights("r5", persist=False)
+    w = rw["weights"]
+    assert w["momentum_12_1"] > w["quality"]      # predictive beats noise
+    assert w["momentum_12_1"] > confidence.IC_PRIORS["momentum_12_1"] / sum(confidence.IC_PRIORS.values())
+
+
+def test_composite_accuracy_hit_rate(tmp_accuracy):
+    # composite sign matches realized sign in 3/4 rows -> 75%
+    rows = [
+        {"as_of": "2026-06-10", "ticker": "A", "composite": 1.0, "r5": 0.03, "contrib": {}},
+        {"as_of": "2026-06-10", "ticker": "B", "composite": -1.0, "r5": -0.02, "contrib": {}},
+        {"as_of": "2026-06-10", "ticker": "C", "composite": 0.5, "r5": 0.01, "contrib": {}},
+        {"as_of": "2026-06-10", "ticker": "D", "composite": 0.8, "r5": -0.04, "contrib": {}},
+    ]
+    ledger._write_jsonl(ledger.SCORED_PATH, rows)
+    ca = accuracy.composite_accuracy("r5")
+    assert ca["n"] == 4
+    assert ca["hit_rate"] == pytest.approx(0.75)
