@@ -1,0 +1,1782 @@
+{
+  "CEG": {
+    "ticker": "CEG",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "84.93B",
+      "enterprise_value_text": "106.56B",
+      "income_text": "3.79B",
+      "sales_text": "28.50B",
+      "book_per_share": 92.49,
+      "cash_per_share": 3.26,
+      "employees": 15339.0,
+      "ipo_date": "Jan 19, 2022"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 84930000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "VLO": {
+    "ticker": "VLO",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "80.01B",
+      "enterprise_value_text": "88.80B",
+      "income_text": "4.19B",
+      "sales_text": "125.06B",
+      "book_per_share": 80.39,
+      "cash_per_share": 19.4,
+      "employees": 9811.0,
+      "ipo_date": "Nov 01, 1984"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 80010000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "DINO": {
+    "ticker": "DINO",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "13.08B",
+      "enterprise_value_text": "15.25B",
+      "income_text": "1.22B",
+      "sales_text": "27.62B",
+      "book_per_share": 53.61,
+      "cash_per_share": 6.37,
+      "employees": 5165.0,
+      "ipo_date": "Jul 02, 1962"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 13080000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "AXON": {
+    "ticker": "AXON",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "47.87B",
+      "enterprise_value_text": "48.95B",
+      "income_text": "205.99M",
+      "sales_text": "2.98B",
+      "book_per_share": 43.86,
+      "cash_per_share": 9.29,
+      "employees": 6300.0,
+      "ipo_date": "Jun 07, 2001"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 47870000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "LNG": {
+    "ticker": "LNG",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "51.11B",
+      "enterprise_value_text": "80.67B",
+      "income_text": "1.46B",
+      "sales_text": "20.95B",
+      "book_per_share": 17.87,
+      "cash_per_share": 8.44,
+      "employees": 1717.0,
+      "ipo_date": "Apr 04, 1994"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 51110000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "WEN": {
+    "ticker": "WEN",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1.70B",
+      "enterprise_value_text": "5.37B",
+      "income_text": "148.56M",
+      "sales_text": "2.19B",
+      "book_per_share": 0.61,
+      "cash_per_share": 2.35,
+      "employees": 14900.0,
+      "ipo_date": "Jun 18, 1976"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1700000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "VEEV": {
+    "ticker": "VEEV",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "29.93B",
+      "enterprise_value_text": "22.72B",
+      "income_text": "941.65M",
+      "sales_text": "3.32B",
+      "book_per_share": 44.83,
+      "cash_per_share": 45.02,
+      "employees": 7928.0,
+      "ipo_date": "Oct 16, 2013"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 29930000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "TSLA": {
+    "ticker": "TSLA",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1597.31B",
+      "enterprise_value_text": "1568.82B",
+      "income_text": "3.86B",
+      "sales_text": "97.88B",
+      "book_per_share": 22.4,
+      "cash_per_share": 12.0,
+      "employees": 134785.0,
+      "ipo_date": "Jun 29, 2010"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1597310000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "HUM": {
+    "ticker": "HUM",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "49.16B",
+      "income_text": "1.13B",
+      "sales_text": "137.20B",
+      "book_per_share": 154.75,
+      "employees": 67060.0,
+      "ipo_date": "Jul 02, 1969"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 49160000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "CARG": {
+    "ticker": "CARG",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "3.17B",
+      "enterprise_value_text": "3.29B",
+      "income_text": "149.09M",
+      "sales_text": "957.38M",
+      "book_per_share": 2.64,
+      "cash_per_share": 0.8,
+      "employees": 1218.0,
+      "ipo_date": "Oct 12, 2017"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 3170000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "APP": {
+    "ticker": "APP",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "189.68B",
+      "enterprise_value_text": "190.43B",
+      "income_text": "3.86B",
+      "sales_text": "6.16B",
+      "book_per_share": 7.03,
+      "cash_per_share": 8.21,
+      "employees": 898.0,
+      "ipo_date": "Apr 15, 2021"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 189680000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "RBLX": {
+    "ticker": "RBLX",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "41.49B",
+      "enterprise_value_text": "40.06B",
+      "income_text": "-1.10B",
+      "sales_text": "5.30B",
+      "book_per_share": 0.6,
+      "cash_per_share": 4.47,
+      "employees": 3065.0,
+      "ipo_date": "Mar 10, 2021"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 41490000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "JEF": {
+    "ticker": "JEF",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "10.49B",
+      "enterprise_value_text": "31.30B",
+      "income_text": "796.81M",
+      "sales_text": "10.49B",
+      "book_per_share": 54.43,
+      "cash_per_share": 70.02,
+      "employees": 7787.0,
+      "ipo_date": "Oct 07, 1968"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 10490000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "IQV": {
+    "ticker": "IQV",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "33.91B",
+      "enterprise_value_text": "48.00B",
+      "income_text": "1.39B",
+      "sales_text": "16.63B",
+      "book_per_share": 37.27,
+      "cash_per_share": 12.6,
+      "employees": 93000.0,
+      "ipo_date": "May 09, 2013"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 33909999999.999996,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "HOOD": {
+    "ticker": "HOOD",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "97.93B",
+      "enterprise_value_text": "110.63B",
+      "income_text": "1.89B",
+      "sales_text": "4.65B",
+      "book_per_share": 10.34,
+      "cash_per_share": 5.65,
+      "employees": 2900.0,
+      "ipo_date": "Jul 29, 2021"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 97930000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "TROW": {
+    "ticker": "TROW",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "24.88B",
+      "enterprise_value_text": "22.71B",
+      "income_text": "2.04B",
+      "sales_text": "7.41B",
+      "book_per_share": 50.16,
+      "cash_per_share": 17.41,
+      "employees": 7773.0,
+      "ipo_date": "Apr 02, 1986"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 24880000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "COLD": {
+    "ticker": "COLD",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "4.57B",
+      "enterprise_value_text": "9.12B",
+      "income_text": "-111.72M",
+      "sales_text": "2.60B",
+      "book_per_share": 9.88,
+      "cash_per_share": 0.14,
+      "employees": 12690.0,
+      "ipo_date": "Jan 19, 2018"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 4570000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "CMC": {
+    "ticker": "CMC",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "6.77B",
+      "enterprise_value_text": "9.83B",
+      "income_text": "595.11M",
+      "sales_text": "8.85B",
+      "book_per_share": 40.94,
+      "cash_per_share": 5.09,
+      "employees": 12690.0,
+      "ipo_date": "Jul 06, 1962"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 6770000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "META": {
+    "ticker": "META",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1555.82B",
+      "enterprise_value_text": "1561.07B",
+      "income_text": "70.59B",
+      "sales_text": "214.96B",
+      "book_per_share": 96.01,
+      "cash_per_share": 32.11,
+      "employees": 78865.0,
+      "ipo_date": "May 18, 2012"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1555820000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "TRU": {
+    "ticker": "TRU",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "14.36B",
+      "enterprise_value_text": "19.47B",
+      "income_text": "704.50M",
+      "sales_text": "4.73B",
+      "book_per_share": 24.66,
+      "cash_per_share": 3.8,
+      "employees": 13500.0,
+      "ipo_date": "Jun 25, 2015"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 14360000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "QLYS": {
+    "ticker": "QLYS",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "5.05B",
+      "enterprise_value_text": "4.63B",
+      "income_text": "201.43M",
+      "sales_text": "685.87M",
+      "book_per_share": 16.11,
+      "cash_per_share": 13.38,
+      "employees": 2625.0,
+      "ipo_date": "Sep 28, 2012"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 5050000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "IDA": {
+    "ticker": "IDA",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "8.32B",
+      "enterprise_value_text": "12.00B",
+      "income_text": "331.81M",
+      "sales_text": "1.78B",
+      "book_per_share": 65.73,
+      "cash_per_share": 6.1,
+      "employees": 2174.0,
+      "ipo_date": "Jan 13, 1978"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 8320000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "ON": {
+    "ticker": "ON",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "36.83B",
+      "enterprise_value_text": "37.69B",
+      "income_text": "573.70M",
+      "sales_text": "6.06B",
+      "book_per_share": 18.63,
+      "cash_per_share": 6.18,
+      "employees": 22600.0,
+      "ipo_date": "Apr 28, 2000"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 36830000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "PANW": {
+    "ticker": "PANW",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "286.91B",
+      "enterprise_value_text": "285.87B",
+      "income_text": "842.80M",
+      "sales_text": "10.61B",
+      "book_per_share": 34.03,
+      "cash_per_share": 3.82,
+      "employees": 16068.0,
+      "ipo_date": "Jul 20, 2012"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 286910000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "CHRD": {
+    "ticker": "CHRD",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "6.28B",
+      "enterprise_value_text": "7.56B",
+      "income_text": "-66.47M",
+      "sales_text": "5.33B",
+      "book_per_share": 142.96,
+      "cash_per_share": 4.01,
+      "employees": 676.0,
+      "ipo_date": "Nov 20, 2020"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 6280000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "FLO": {
+    "ticker": "FLO",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1.78B",
+      "enterprise_value_text": "3.82B",
+      "income_text": "72.88M",
+      "sales_text": "5.27B",
+      "book_per_share": 6.14,
+      "cash_per_share": 0.05,
+      "employees": 10300.0,
+      "ipo_date": "Nov 05, 1987"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1780000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "AWK": {
+    "ticker": "AWK",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "25.74B",
+      "enterprise_value_text": "41.24B",
+      "income_text": "1.10B",
+      "sales_text": "5.21B",
+      "book_per_share": 56.52,
+      "cash_per_share": 1.03,
+      "employees": 7000.0,
+      "ipo_date": "Apr 23, 2008"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 25740000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "KFRC": {
+    "ticker": "KFRC",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "902.66M",
+      "enterprise_value_text": "1.01B",
+      "income_text": "34.60M",
+      "sales_text": "1.33B",
+      "book_per_share": 6.54,
+      "cash_per_share": 0.08,
+      "employees": 9400.0,
+      "ipo_date": "Aug 15, 1995"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 902660000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "GEV": {
+    "ticker": "GEV",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "304.82B",
+      "enterprise_value_text": "298.65B",
+      "income_text": "9.38B",
+      "sales_text": "39.35B",
+      "book_per_share": 51.81,
+      "cash_per_share": 37.85,
+      "employees": 75000.0,
+      "ipo_date": "Mar 27, 2024"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 304820000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "MDB": {
+    "ticker": "MDB",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "28.91B",
+      "enterprise_value_text": "26.54B",
+      "income_text": "-29.09M",
+      "sales_text": "2.60B",
+      "book_per_share": 36.46,
+      "cash_per_share": 30.18,
+      "employees": 5636.0,
+      "ipo_date": "Oct 19, 2017"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 28910000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "WMT": {
+    "ticker": "WMT",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "866.00B",
+      "enterprise_value_text": "936.09B",
+      "income_text": "22.74B",
+      "sales_text": "725.30B",
+      "book_per_share": 11.85,
+      "cash_per_share": 1.35,
+      "employees": 2100000.0,
+      "ipo_date": "Nov 20, 1972"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 866000000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "ADNT": {
+    "ticker": "ADNT",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1.42B",
+      "enterprise_value_text": "3.61B",
+      "income_text": "59.00M",
+      "sales_text": "14.94B",
+      "book_per_share": 21.85,
+      "cash_per_share": 10.6,
+      "employees": 65000.0,
+      "ipo_date": "Oct 17, 2016"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1420000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "BSX": {
+    "ticker": "BSX",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "64.00B",
+      "enterprise_value_text": "73.75B",
+      "income_text": "3.56B",
+      "sales_text": "20.61B",
+      "book_per_share": 17.4,
+      "cash_per_share": 1.03,
+      "employees": 59000.0,
+      "ipo_date": "May 19, 1992"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 64000000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "T": {
+    "ticker": "T",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "142.30B",
+      "enterprise_value_text": "305.28B",
+      "income_text": "21.29B",
+      "sales_text": "126.53B",
+      "book_per_share": 15.74,
+      "cash_per_share": 1.77,
+      "employees": 133030.0,
+      "ipo_date": "Nov 21, 1983"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 142300000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "CCI": {
+    "ticker": "CCI",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "33.40B",
+      "enterprise_value_text": "63.06B",
+      "income_text": "2.15B",
+      "sales_text": "4.21B",
+      "book_per_share": -4.4,
+      "cash_per_share": 0.51,
+      "employees": 4000.0,
+      "ipo_date": "Aug 18, 1998"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 33400000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "WEC": {
+    "ticker": "WEC",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "37.86B",
+      "enterprise_value_text": "60.53B",
+      "income_text": "1.64B",
+      "sales_text": "10.08B",
+      "book_per_share": 43.38,
+      "cash_per_share": 0.24,
+      "employees": 7151.0,
+      "ipo_date": "Nov 21, 1947"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 37860000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "CTVA": {
+    "ticker": "CTVA",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "55.87B",
+      "enterprise_value_text": "57.33B",
+      "income_text": "1.16B",
+      "sales_text": "17.89B",
+      "book_per_share": 36.36,
+      "cash_per_share": 3.2,
+      "employees": 21500.0,
+      "ipo_date": "May 24, 2019"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 55870000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "LIN": {
+    "ticker": "LIN",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "246.82B",
+      "enterprise_value_text": "270.70B",
+      "income_text": "7.08B",
+      "sales_text": "34.66B",
+      "book_per_share": 83.37,
+      "cash_per_share": 8.56,
+      "employees": 65177.0,
+      "ipo_date": "Oct 31, 2018"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 246820000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "EPC": {
+    "ticker": "EPC",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1.27B",
+      "enterprise_value_text": "2.25B",
+      "income_text": "-77.80M",
+      "sales_text": "2.11B",
+      "book_per_share": 31.43,
+      "cash_per_share": 6.5,
+      "employees": 6700.0,
+      "ipo_date": "Mar 27, 2000"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1270000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "DOW": {
+    "ticker": "DOW",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "19.47B",
+      "enterprise_value_text": "35.97B",
+      "income_text": "-2.86B",
+      "sales_text": "39.33B",
+      "book_per_share": 21.16,
+      "cash_per_share": 6.44,
+      "employees": 34600.0,
+      "ipo_date": "Mar 20, 2019"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 19470000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "PPG": {
+    "ticker": "PPG",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "27.33B",
+      "enterprise_value_text": "33.59B",
+      "income_text": "1.58B",
+      "sales_text": "16.12B",
+      "book_per_share": 36.36,
+      "cash_per_share": 7.29,
+      "employees": 43500.0,
+      "ipo_date": "Dec 17, 1945"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 27330000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "KVUE": {
+    "ticker": "KVUE",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "37.11B",
+      "enterprise_value_text": "44.84B",
+      "income_text": "1.62B",
+      "sales_text": "15.29B",
+      "book_per_share": 5.53,
+      "cash_per_share": 0.56,
+      "employees": 22000.0,
+      "ipo_date": "May 04, 2023"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 37110000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "DEA": {
+    "ticker": "DEA",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1.17B",
+      "enterprise_value_text": "2.93B",
+      "income_text": "10.53M",
+      "sales_text": "348.97M",
+      "book_per_share": 28.18,
+      "cash_per_share": 0.27,
+      "employees": 55.0,
+      "ipo_date": "Feb 06, 2015"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1170000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "WELL": {
+    "ticker": "WELL",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "162.49B",
+      "enterprise_value_text": "178.80B",
+      "income_text": "-410.11M",
+      "sales_text": "11.75B",
+      "book_per_share": 62.15,
+      "cash_per_share": 6.83,
+      "employees": 712.0,
+      "ipo_date": "Mar 19, 1980"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 162490000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "SNOW": {
+    "ticker": "SNOW",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "90.53B",
+      "enterprise_value_text": "90.35B",
+      "income_text": "-1.20B",
+      "sales_text": "5.03B",
+      "book_per_share": 5.6,
+      "cash_per_share": 8.53,
+      "employees": 9060.0,
+      "ipo_date": "Sep 16, 2020"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 90530000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "MU": {
+    "ticker": "MU",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "1165.85B",
+      "enterprise_value_text": "1146.18B",
+      "income_text": "50.47B",
+      "sales_text": "90.27B",
+      "book_per_share": 89.22,
+      "cash_per_share": 23.06,
+      "employees": 53000.0,
+      "ipo_date": "Jun 01, 1984"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 1165850000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "MRVL": {
+    "ticker": "MRVL",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "237.99B",
+      "enterprise_value_text": "239.67B",
+      "income_text": "2.53B",
+      "sales_text": "8.72B",
+      "book_per_share": 20.8,
+      "cash_per_share": 4.39,
+      "employees": 7480.0,
+      "ipo_date": "Jun 27, 2000"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 237990000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "ZS": {
+    "ticker": "ZS",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "23.68B",
+      "enterprise_value_text": "22.00B",
+      "income_text": "-77.39M",
+      "sales_text": "3.17B",
+      "book_per_share": 14.63,
+      "cash_per_share": 21.89,
+      "employees": 7923.0,
+      "ipo_date": "Mar 16, 2018"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 23680000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "NTAP": {
+    "ticker": "NTAP",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "30.64B",
+      "enterprise_value_text": "29.79B",
+      "income_text": "1.28B",
+      "sales_text": "6.92B",
+      "book_per_share": 6.89,
+      "cash_per_share": 18.29,
+      "employees": 11700.0,
+      "ipo_date": "Nov 21, 1995"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 30640000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "INTC": {
+    "ticker": "INTC",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "638.40B",
+      "enterprise_value_text": "664.24B",
+      "income_text": "-3.17B",
+      "sales_text": "53.76B",
+      "book_per_share": 22.18,
+      "cash_per_share": 6.52,
+      "employees": 85100.0,
+      "ipo_date": "May 03, 1973"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 638400000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "AMKR": {
+    "ticker": "AMKR",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "19.83B",
+      "enterprise_value_text": "19.54B",
+      "income_text": "436.12M",
+      "sales_text": "7.07B",
+      "book_per_share": 18.29,
+      "cash_per_share": 7.46,
+      "employees": 30800.0,
+      "ipo_date": "May 01, 1998"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 19830000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "FORM": {
+    "ticker": "FORM",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "11.47B",
+      "enterprise_value_text": "11.20B",
+      "income_text": "68.34M",
+      "sales_text": "839.78M",
+      "book_per_share": 13.58,
+      "cash_per_share": 3.9,
+      "employees": 2153.0,
+      "ipo_date": "Jun 12, 2003"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 11470000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "INTU": {
+    "ticker": "INTU",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "73.06B",
+      "enterprise_value_text": "73.18B",
+      "income_text": "4.58B",
+      "sales_text": "20.93B",
+      "book_per_share": 75.21,
+      "cash_per_share": 24.79,
+      "employees": 18200.0,
+      "ipo_date": "Mar 12, 1993"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 73060000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  },
+  "ACN": {
+    "ticker": "ACN",
+    "ok": true,
+    "snapshot": {
+      "market_cap_text": "80.24B",
+      "enterprise_value_text": "80.08B",
+      "income_text": "7.79B",
+      "sales_text": "73.10B",
+      "book_per_share": 52.12,
+      "cash_per_share": 16.62,
+      "employees": 779000.0,
+      "ipo_date": "Jul 19, 2001"
+    },
+    "squeeze": {
+      "score": 0.0,
+      "label": "no squeeze",
+      "components": {},
+      "short_float": null,
+      "short_ratio": null
+    },
+    "signals": {
+      "fv_recom": null,
+      "fv_target_upside": null,
+      "fv_quality": null,
+      "fv_short_pressure": null,
+      "fv_momentum": null,
+      "fv_growth": null,
+      "fv_inst_flow": null
+    },
+    "market_cap": 80240000000.0,
+    "short_interest": null,
+    "earnings_date": null
+  }
+}

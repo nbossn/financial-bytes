@@ -41,7 +41,10 @@ LEDGER_DIR.mkdir(parents=True, exist_ok=True)
 PRED_PATH = LEDGER_DIR / "predictions.jsonl"
 SCORED_PATH = LEDGER_DIR / "scored.jsonl"
 
-HORIZONS = {"r1": 1, "r5": 5, "r20": 20}
+# Forward-return horizons (trading days). Longer horizons support the
+# "hold long" thesis — a short-term market downturn shouldn't invalidate a
+# multi-week/multi-month hold, so we track out to ~3 months (r60).
+HORIZONS = {"r1": 1, "r5": 5, "r10": 10, "r20": 20, "r60": 60}
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -71,7 +74,7 @@ def record(records: list[dict], as_of: str) -> int:
     return len(records)
 
 
-def _forward_returns(tickers: list[str], start: str, max_h: int = 20) -> dict:
+def _forward_returns(tickers: list[str], start: str, max_h: int = max(HORIZONS.values())) -> dict:
     """Realized forward returns from `start` close, per ticker, at each horizon."""
     import yfinance as yf
     start_d = date.fromisoformat(start)

@@ -377,17 +377,22 @@ def render_markdown(out: dict) -> str:
     # accuracy callout (filled once realized outcomes accrue)
     try:
         from src.stockpicker import accuracy as _acc
-        ca = _acc.composite_accuracy()
-        if ca.get("n", 0) > 0:
-            ls = (f", long/short spread {ca['long_short_spread']*100:+.2f}%"
-                  if ca.get("long_short_spread") is not None else "")
-            L.append(f"> 📊 **Track record so far ({ca['n']} scored picks, "
-                     f"{ca['n_dates']} dates):** {ca['hit_rate']*100:.0f}% directional hit "
-                     f"rate, rank IC {ca.get('rank_ic', float('nan')):+.3f}{ls}. "
+        byh = _acc.accuracy_by_horizon()
+        if byh:
+            longest = byh[-1]  # hold-long emphasis: the longest resolved horizon
+            parts = "; ".join(
+                f"{r['days']}d {r['hit_rate']*100:.0f}% hit"
+                + (f"/{r['long_short_spread']*100:+.1f}% L-S" if r['long_short_spread'] is not None else "")
+                for r in byh)
+            pending = [f"{d}d" for h, d in _acc.ledger.HORIZONS.items()
+                       if _acc.composite_accuracy(h).get("n", 0) == 0]
+            pend_txt = (f" Longer holds ({', '.join(pending)}) still resolving — "
+                        f"the hold-long thesis is judged there." if pending else "")
+            L.append(f"> 📊 **Track record ({longest['n']} scored picks):** {parts}.{pend_txt} "
                      f"Full breakdown → [[Projects/stock-picker/SCORECARD]].\n")
         else:
             L.append("> 📊 **Track record:** accruing — predictions are logged each run and "
-                     "scored against realized 1/5/20-day returns after ~5 trading days. "
+                     "scored against realized 1/5/10/20/60-day returns as they resolve. "
                      "See [[Projects/stock-picker/SCORECARD]].\n")
     except Exception:
         pass
