@@ -209,6 +209,42 @@ def test_signal_ic_insufficient_rows_returns_empty(tmp_ledger):
     assert ledger.signal_ic("r5") == {}
 
 
+def test_score_backfills_horizons_as_they_mature(tmp_ledger, monkeypatch):
+    # Old dates so `age >= min_age_days` regardless of the real clock.
+    ledger.record([_rec("AAA", 1.0, {"momentum_12_1": 0.5})], as_of="2020-06-01")
+
+    # Run 1: only r1 has resolved (too few trading days of forward data yet).
+    monkeypatch.setattr(ledger, "_forward_returns",
+                        lambda tickers, start: {"AAA": {"r1": 0.01}})
+    assert ledger.score() == 1
+    rows = ledger._read_jsonl(ledger.SCORED_PATH)
+    assert len(rows) == 1
+    assert rows[0]["r1"] == 0.01 and rows[0]["r5"] is None
+
+    # Run 2 (later): r5 and r10 have now matured -> must be backfilled in place.
+    monkeypatch.setattr(ledger, "_forward_returns",
+                        lambda tickers, start: {"AAA": {"r1": 0.01, "r5": 0.05, "r10": 0.08}})
+    assert ledger.score() == 1
+    rows = ledger._read_jsonl(ledger.SCORED_PATH)
+    assert len(rows) == 1                       # upsert, not a duplicate row
+    assert rows[0]["r5"] == 0.05 and rows[0]["r10"] == 0.08
+    assert rows[0]["r20"] is None               # still maturing, stays open
+
+
+def test_score_skips_fully_resolved_rows(tmp_ledger, monkeypatch):
+    ledger.record([_rec("AAA", 1.0, {})], as_of="2020-06-01")
+    ledger._write_jsonl(ledger.SCORED_PATH, [
+        {"as_of": "2020-06-01", "ticker": "AAA", "composite": 1.0, "contrib": {},
+         **{k: 0.01 for k in ledger.HORIZONS}}])
+    calls = {"n": 0}
+    def _fr(tickers, start):
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(ledger, "_forward_returns", _fr)
+    assert ledger.score() == 0        # nothing left open
+    assert calls["n"] == 0            # so no network fetch happens
+
+
 # ─────────────────────────── accuracy + running weights ──────────────────────
 
 @pytest.fixture

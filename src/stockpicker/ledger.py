@@ -102,8 +102,21 @@ def _forward_returns(tickers: list[str], start: str, max_h: int = max(HORIZONS.v
     return out
 
 
+def _complete(row: dict) -> bool:
+    """True once every horizon has a resolved (non-null) return."""
+    return all(row.get(k) is not None for k in HORIZONS)
+
+
 def score(min_age_days: int = 5) -> int:
-    """Join realized forward returns onto past predictions old enough to resolve."""
+    """Join realized forward returns onto predictions, backfilling horizons as they mature.
+
+    Runs as an *upsert*, not append-once. A prediction row stays "open" until every
+    horizon (r1..r60) has resolved; on each run we re-fetch the still-open rows and
+    fill in whichever longer horizons have since matured. This fixes the prior bug
+    where a row scored at ~5 calendar days captured only r1 (too few trading days of
+    forward data existed yet) and was never revisited — so r5..r60 stayed permanently
+    null and the running weights could never learn from realized outcomes.
+    """
     preds = _read_jsonl(PRED_PATH)
     if not preds:
         print("[ledger] no predictions recorded yet"); return 0
@@ -112,14 +125,15 @@ def score(min_age_days: int = 5) -> int:
     for p in preds:
         by_date.setdefault(p["as_of"], []).append(p)
 
-    already = {(r["as_of"], r["ticker"]) for r in _read_jsonl(SCORED_PATH)}
-    scored = _read_jsonl(SCORED_PATH)
-    new = 0
+    scored_by_key = {(r["as_of"], r["ticker"]): r for r in _read_jsonl(SCORED_PATH)}
+    changed = 0
     for as_of, rows in sorted(by_date.items()):
         age = (today - date.fromisoformat(as_of)).days
         if age < min_age_days:
             continue
-        pending = [r for r in rows if (as_of, r["ticker"]) not in already]
+        # Re-score any row that is new OR still has an unresolved horizon.
+        pending = [r for r in rows
+                   if not _complete(scored_by_key.get((as_of, r["ticker"]), {}))]
         if not pending:
             continue
         fr = _forward_returns([r["ticker"] for r in pending], as_of)
@@ -127,12 +141,22 @@ def score(min_age_days: int = 5) -> int:
             rets = fr.get(r["ticker"])
             if not rets:
                 continue
-            scored.append({**r, **{k: rets.get(k) for k in HORIZONS}})
-            new += 1
+            key = (as_of, r["ticker"])
+            existing = scored_by_key.get(key)
+            merged = dict(existing) if existing else {**r, **{k: None for k in HORIZONS}}
+            filled = 0
+            for k in HORIZONS:
+                if merged.get(k) is None and rets.get(k) is not None:
+                    merged[k] = rets[k]
+                    filled += 1
+            if existing is None or filled:
+                scored_by_key[key] = merged
+                changed += 1
         print(f"[ledger] scored {as_of} (age {age}d): {len(fr)} names")
-    _write_jsonl(SCORED_PATH, scored)
-    print(f"[ledger] {new} new scored rows (total {len(scored)})")
-    return new
+    out = list(scored_by_key.values())
+    _write_jsonl(SCORED_PATH, out)
+    print(f"[ledger] {changed} rows updated (total {len(out)})")
+    return changed
 
 
 def signal_ic(horizon: str = "r5") -> dict:
