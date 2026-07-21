@@ -222,13 +222,33 @@ def signals(snap: dict) -> dict:
     }
 
 
+# Fields the picker actually WEIGHTS. A snapshot missing these is useless to the
+# composite even though the fetch "succeeded" — which is exactly how a finviz
+# layout change went unnoticed from 2026-06-29 to 2026-07-20: `ok` only meant
+# "got a non-empty dict", so coverage reported 55/55 while short_float, roe and
+# analyst_recom were all None and three weighted signals silently contributed 0.
+CRITICAL_FIELDS = ("short_float", "short_ratio", "roe", "analyst_recom")
+
+
+def snapshot_is_complete(snap: dict | None) -> bool:
+    """True when every field the composite weights is actually present."""
+    if not snap:
+        return False
+    return all(snap.get(f) is not None for f in CRITICAL_FIELDS)
+
+
 def enrich_ticker(ticker: str) -> dict:
     """Full finviz enrichment for one ticker: snapshot + squeeze + signals."""
     snap = fetch(ticker)
     if not snap:
-        return {"ticker": ticker, "ok": False}
+        return {"ticker": ticker, "ok": False, "complete": False}
     return {
-        "ticker": ticker, "ok": True, "snapshot": snap,
+        "ticker": ticker, "ok": True,
+        # `ok` = the fetch worked. `complete` = the weighted fields are present.
+        # Report BOTH; a high ok / low complete split is the signature of a
+        # parser drift after a site layout change.
+        "complete": snapshot_is_complete(snap),
+        "snapshot": snap,
         "squeeze": squeeze_score(snap), "signals": signals(snap),
         "market_cap": _parse_cap(snap.get("market_cap_text")),
         "short_interest": _parse_cap(snap.get("short_interest_text")),

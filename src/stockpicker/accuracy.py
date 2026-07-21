@@ -104,8 +104,15 @@ def _extreme_call(df: pd.DataFrame, best: bool) -> dict | None:
 # ───────────────────────────── per-signal accuracy ─────────────────────────────
 
 def _signal_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Explode the per-row contrib dict into a signal-contribution matrix."""
-    contrib = pd.json_normalize(df["contrib"]).fillna(0.0)
+    """Explode the per-row contrib dict into a signal-contribution matrix.
+
+    NaN is left in place deliberately. A signal only starts being logged from
+    the run that introduced it, so older rows genuinely have *no observation* —
+    filling those with 0.0 fabricates a long run of zeros and drags the measured
+    IC toward zero for exactly the signals we just started tracking. Leaving NaN
+    lets pandas' pairwise correlation ignore rows where the signal didn't exist.
+    """
+    contrib = pd.json_normalize(df["contrib"])
     contrib.index = df.index
     return contrib
 
@@ -120,11 +127,16 @@ def signal_stats(horizon: str = DEFAULT_HORIZON) -> dict[str, dict]:
     stats: dict[str, dict] = {}
     for col in contrib.columns:
         x = contrib[col].astype(float)
-        if (x != 0).sum() < 3 or x.nunique() < 3:
+        # NaN means "signal not logged for this row" (see _signal_frame). It is
+        # NOT a zero contribution, and `NaN != 0` is True in pandas — so every
+        # live-observation test must mask on notna() first or absent rows get
+        # counted as real ones.
+        live = x.notna() & (x != 0)
+        if live.sum() < 3 or x.nunique(dropna=True) < 3:
             continue
         ic = float(x.corr(y, method="spearman"))
         # directional hit rate for this signal's contribution
-        nz = x != 0
+        nz = live
         hit = float((((x[nz] > 0) & (y[nz] > 0)) | ((x[nz] < 0) & (y[nz] < 0))).mean())
         # ICIR: IC per date, then mean/std (needs >=2 dates)
         ics_by_date = []

@@ -166,12 +166,14 @@ def signal_ic(horizon: str = "r5") -> dict:
         print(f"[ledger] only {len(rows)} scored rows — need >=10 for a stable IC")
         return {}
     df = pd.DataFrame(rows)
-    contrib = pd.json_normalize(df["contrib"]).fillna(0.0)
+    # Keep NaN: a signal added later has no observation on older rows, and
+    # filling 0.0 would fabricate a run of zeros that drags its IC toward zero.
+    contrib = pd.json_normalize(df["contrib"])
     y = df[horizon].astype(float)
     ics = {}
     for col in contrib.columns:
         x = contrib[col].astype(float)
-        if x.nunique() < 3:
+        if x.nunique(dropna=True) < 3 or x.notna().sum() < 10:
             continue
         ics[col] = float(x.corr(y, method="spearman"))
     # composite IC too

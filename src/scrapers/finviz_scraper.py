@@ -174,11 +174,25 @@ def _parse_snapshot(soup: BeautifulSoup) -> dict:
     - Dash-only values ("-" or "- -") are skipped.
     """
     result: dict = {}
-    snapshot = soup.find("table", class_="snapshot-table2")
-    if not snapshot:
-        return result
 
-    cells = snapshot.find_all("td")
+    # Finviz restructured the quote page (observed 2026-07-20): the legacy
+    # `table.snapshot-table2` now holds only ~14 label/value pairs (Index,
+    # Market Cap, Income, Sales, Dividends, Employees, IPO), while everything
+    # the pickers weight — P/E, Short Float, Short Ratio, ROE, ROIC, Recom,
+    # Target Price, Beta, RSI — moved into sibling containers outside it.
+    # Scoping to that one table silently returned 8 fields instead of ~72.
+    # Both label and value cells still carry `snapshot-td2`, so collect them
+    # page-wide and keep the pairwise walk. Legacy layout kept as a fallback.
+    cells = soup.find_all(
+        "td",
+        class_=lambda c: c
+        and "snapshot-td2" in (" ".join(c) if isinstance(c, list) else c),
+    )
+    if not cells:
+        snapshot = soup.find("table", class_="snapshot-table2")
+        if not snapshot:
+            return result
+        cells = snapshot.find_all("td")
     for i in range(0, len(cells) - 1, 2):
         label = cells[i].get_text(strip=True)
         value_text = cells[i + 1].get_text(strip=True)

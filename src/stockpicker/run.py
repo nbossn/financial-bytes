@@ -34,7 +34,7 @@ import yfinance as yf
 
 from src.stockpicker import sectors, macro, finviz_data, options_data, ledger
 from src.stockpicker.engine import compute_price_signals_at, cross_sectional_z, PRICE_SIGNALS
-from src.stockpicker.confidence import build_confidence_matrix, IC_PRIORS
+from src.stockpicker.confidence import build_confidence_matrix, IC_PRIORS, PRIOR_W
 from src.stockpicker.risk import classify_risk
 from src.stockpicker.report import enrich, _z
 
@@ -132,7 +132,17 @@ def main(write_report: bool = True) -> dict:
     fv = finviz_data.enrich_batch(good)
     finviz_data.persist_snapshots(fv, as_of=scan["date_end"])
     n_ok = sum(1 for t in good if fv[t].get("ok"))
-    print(f"[run] finviz coverage: {n_ok}/{len(good)} candidates")
+    n_full = sum(1 for t in good if fv[t].get("complete"))
+    print(f"[run] finviz coverage: {n_ok}/{len(good)} fetched, "
+          f"{n_full}/{len(good)} with weighted fields "
+          f"({'/'.join(finviz_data.CRITICAL_FIELDS)})")
+    # Fetching fine but fields missing == parser drift after a site change.
+    # This is the check that was absent while three weighted signals sat at
+    # zero for ~3.5 weeks; fail loudly rather than silently scoring on nothing.
+    if n_ok and n_full < 0.8 * n_ok:
+        print(f"  [finviz] ⚠ WARNING: {n_ok - n_full}/{n_ok} fetched snapshots are "
+              f"MISSING weighted fields — short/quality/recom signals will "
+              f"contribute ~0. Likely a finviz layout change; check _parse_snapshot.")
 
     # --- OPTIONS enrichment (yfinance chain: ATM IV, put/call, OI) ---
     print(f"[run] options/IV enrichment for {len(good)} candidates ...")
@@ -158,20 +168,28 @@ def main(write_report: bool = True) -> dict:
         for name in PRICE_SIGNALS:
             c = weights.get(name, 0.0) * float(z_price[name].reindex([t]).iloc[0])
             contrib[name] = c; comp += c
-        comp += (weights.get("revision_proxy", IC_PRIORS["revision_proxy"]) * z_rev[t]
-                 + weights.get("earnings_sue", IC_PRIORS["earnings_sue"]) * z_sue[t]
-                 + weights.get("pead_drift", IC_PRIORS["pead_drift"]) * z_pead[t])
+
+        # Event/revision signals. Measured weight when available, else the
+        # NORMALIZED prior (PRIOR_W) — never the raw IC, which is on a ~10x
+        # smaller scale than the unit-normalized measured vector.
+        contrib["revision_proxy"] = weights.get("revision_proxy", PRIOR_W["revision_proxy"]) * z_rev[t]
+        contrib["earnings_sue"]   = weights.get("earnings_sue",   PRIOR_W["earnings_sue"])   * z_sue[t]
+        contrib["pead_drift"]     = weights.get("pead_drift",     PRIOR_W["pead_drift"])     * z_pead[t]
+
         # finviz contributions (short weighted heavily per Nick's directive)
-        comp += (IC_PRIORS["short_squeeze"] * z_squeeze[t]
-                 + IC_PRIORS["short_pressure"] * z_short[t]
-                 + IC_PRIORS["analyst_recom"] * z_recom[t]
-                 + IC_PRIORS["quality"] * z_quality[t])
-        contrib["short_squeeze"] = IC_PRIORS["short_squeeze"] * z_squeeze[t]
-        contrib["analyst_recom"] = IC_PRIORS["analyst_recom"] * z_recom[t]
-        contrib["quality"] = IC_PRIORS["quality"] * z_quality[t]
+        contrib["short_squeeze"]  = PRIOR_W["short_squeeze"]  * z_squeeze[t]
+        contrib["short_pressure"] = PRIOR_W["short_pressure"] * z_short[t]
+        contrib["analyst_recom"]  = PRIOR_W["analyst_recom"]  * z_recom[t]
+        contrib["quality"]        = PRIOR_W["quality"]        * z_quality[t]
+
         # options positioning (put/call); IV level is risk-only, not directional
-        comp += IC_PRIORS["opt_pc_sentiment"] * z_pc[t]
-        contrib["opt_pc_sentiment"] = IC_PRIORS["opt_pc_sentiment"] * z_pc[t]
+        contrib["opt_pc_sentiment"] = PRIOR_W["opt_pc_sentiment"] * z_pc[t]
+
+        # Every term above is now recorded in `contrib`, so accuracy.signal_stats
+        # can measure an IC for each one. Previously short_pressure, earnings_sue,
+        # pead_drift and revision_proxy were added to `comp` but never logged —
+        # ~1/4 of the composite whose weights could never be learned from data.
+        comp += sum(v for k, v in contrib.items() if k not in PRICE_SIGNALS)
         rp = classify_risk(t, enriched[t]["info"])
         info = enriched[t]["info"]
         sq = fv[t].get("squeeze", {}) if fv[t].get("ok") else {}

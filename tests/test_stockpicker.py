@@ -298,3 +298,79 @@ def test_composite_accuracy_hit_rate(tmp_accuracy):
     ca = accuracy.composite_accuracy("r5")
     assert ca["n"] == 4
     assert ca["hit_rate"] == pytest.approx(0.75)
+
+
+# ───────────────── finviz parser drift regression (2026-07-20) ─────────────────
+# Finviz moved most snapshot cells OUT of `table.snapshot-table2` into sibling
+# containers. The parser scoped to that table, so it silently returned ~8 generic
+# fields instead of ~72 — short_float/roe/analyst_recom all None — and three
+# weighted signals contributed 0 for ~3.5 weeks while coverage reported "55/55".
+
+_NEW_LAYOUT_HTML = """
+<html><body>
+  <table class="snapshot-table2">
+    <tr><td class="snapshot-td2">Index</td><td class="snapshot-td2">S&amp;P 500</td></tr>
+    <tr><td class="snapshot-td2">Market Cap</td><td class="snapshot-td2">1403.10B</td></tr>
+  </table>
+  <div class="other-container">
+    <table>
+      <tr>
+        <td class="snapshot-td2 cursor-pointer"><div><a>Short Float</a></div></td>
+        <td class="snapshot-td2"><div class="snapshot-td-content"><a><b>3.01%</b></a></div></td>
+        <td class="snapshot-td2 cursor-pointer"><div><a>Short Ratio</a></div></td>
+        <td class="snapshot-td2"><div class="snapshot-td-content"><b>1.60</b></div></td>
+      </tr>
+      <tr>
+        <td class="snapshot-td2"><div><a>ROE</a></div></td>
+        <td class="snapshot-td2"><div class="snapshot-td-content"><b>4.86%</b></div></td>
+        <td class="snapshot-td2"><div><a>Recom</a></div></td>
+        <td class="snapshot-td2"><div class="snapshot-td-content"><b>2.55</b></div></td>
+      </tr>
+    </table>
+  </div>
+</body></html>
+"""
+
+
+def test_parse_snapshot_reads_cells_outside_legacy_table():
+    """Fields living outside `table.snapshot-table2` must still be parsed."""
+    from bs4 import BeautifulSoup
+    from src.scrapers.finviz_scraper import _parse_snapshot
+
+    snap = _parse_snapshot(BeautifulSoup(_NEW_LAYOUT_HTML, "lxml"))
+    assert snap.get("short_float") == pytest.approx(3.01)
+    assert snap.get("short_ratio") == pytest.approx(1.60)
+    assert snap.get("roe") == pytest.approx(4.86)
+    assert snap.get("analyst_recom") == pytest.approx(2.55)
+
+
+def test_snapshot_completeness_detects_parser_drift():
+    """A fetch that 'succeeds' but lacks weighted fields must not read as covered."""
+    generic_only = {"market_cap_text": "1403.10B", "employees": 134785.0,
+                    "ipo_date": "Jun 29, 2010"}
+    assert finviz_data.snapshot_is_complete(generic_only) is False
+    assert finviz_data.snapshot_is_complete(None) is False
+
+    full = {f: 1.0 for f in finviz_data.CRITICAL_FIELDS}
+    assert finviz_data.snapshot_is_complete(full) is True
+
+
+# ───────────────── prior scale normalization (weight-mismatch fix) ─────────────
+
+def test_prior_weights_are_normalized_to_unit_scale():
+    """PRIOR_W must sum to 1.0 so priors mix with measured weights correctly."""
+    assert sum(confidence.PRIOR_W.values()) == pytest.approx(1.0)
+    assert set(confidence.PRIOR_W) == set(confidence.IC_PRIORS)
+
+
+def test_short_squeeze_prior_is_not_dwarfed_after_normalization():
+    """Nick's 'weight short heavily' directive must survive the scale mixing.
+
+    Raw IC_PRIORS put short_squeeze (0.045) against a unit-normalized
+    vol_signal (~0.45) — a ~10x handicap that silently defeated the elevation.
+    """
+    raw_ratio = confidence.IC_PRIORS["short_squeeze"] / 0.45
+    norm_ratio = confidence.PRIOR_W["short_squeeze"] / 0.45
+    assert raw_ratio < 0.12          # the old, dwarfed scale
+    assert norm_ratio > 0.15         # meaningfully restored
+    assert confidence.PRIOR_W["short_squeeze"] > confidence.PRIOR_W["short_pressure"]

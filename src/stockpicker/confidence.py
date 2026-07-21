@@ -66,6 +66,20 @@ IC_PRIORS: dict[str, float] = {
     "opt_pc_sentiment":  0.020,  # put/call ratio as positioning/sentiment read
 }
 
+# ---------------------------------------------------------------------------
+# Normalized priors — MUST be used anywhere priors are mixed with measured
+# weights in the same composite.
+#
+# IC_PRIORS are raw information coefficients (~0.02-0.06). The measured weight
+# vector (running_weights.json) is normalized to sum to 1.0, so vol_signal sits
+# at ~0.45. Adding a RAW prior term (short_squeeze = 0.045) alongside a
+# NORMALIZED measured term (vol_signal = 0.45) silently puts the prior on a
+# ~10x smaller scale — which defeated the deliberate "weight short heavily"
+# elevation of short_squeeze: it contributed ~1/14th of vol_signal in practice.
+# Dividing by the prior total puts both on the same unit scale.
+PRIOR_TOTAL = sum(IC_PRIORS.values())
+PRIOR_W: dict[str, float] = {k: v / PRIOR_TOTAL for k, v in IC_PRIORS.items()}
+
 # Prior strength = pseudo-count of cross-sections the prior is "worth".
 # Higher => prior dominates longer. 60 ≈ 3 trading months, our min-sample bar.
 DEFAULT_PRIOR_STRENGTH = 60.0
