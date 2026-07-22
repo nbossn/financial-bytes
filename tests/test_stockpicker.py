@@ -286,6 +286,43 @@ def test_running_weights_shift_toward_predictive_signal(tmp_accuracy):
     assert w["momentum_12_1"] > confidence.IC_PRIORS["momentum_12_1"] / sum(confidence.IC_PRIORS.values())
 
 
+def test_signal_stats_n_counts_cross_sections_not_rows(tmp_accuracy):
+    """`n` must be the number of independent cross-sections (dates), not (ticker,date) rows.
+
+    confidence.build_confidence_matrix defines the shrinkage count n_k as "the
+    number of independent cross-sections measured for signal k" (prior_strength
+    60 ≈ 3 trading months of them), and engine.backtest_ic honours that with
+    n=len(ic_series) — one IC per date. If signal_stats instead reports the raw
+    row count it over-counts ~#tickers-fold, collapses lambda toward 0, and lets
+    a handful of noisy cross-sections dictate the weight vector.
+    """
+    dates = ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04"]
+    rows = []
+    for d in dates:
+        for i in range(20):
+            m = (i - 10) / 10.0
+            rows.append({"as_of": d, "ticker": f"T{i}", "composite": m,
+                         "last_close": 100.0, "risk_tier": "MODERATE",
+                         "contrib": {"momentum_12_1": m}, "r5": m * 0.05})
+    ledger._write_jsonl(ledger.SCORED_PATH, rows)
+    stats = accuracy.signal_stats("r5")
+    # 4 cross-sections, NOT 80 rows.
+    assert stats["momentum_12_1"]["n"] == len(dates)
+
+
+def test_single_name_cross_sections_do_not_switch_to_measured(tmp_accuracy):
+    """One ticker per date carries no cross-sectional IC — n must stay 0 so the
+    weights fall back to priors instead of over-trusting a degenerate 'IC'."""
+    rows = [{"as_of": f"2026-06-{d:02d}", "ticker": "AAA", "composite": 0.1,
+             "last_close": 100.0, "risk_tier": "MODERATE",
+             "contrib": {"momentum_12_1": 0.1}, "r5": 0.02} for d in range(1, 26)]
+    ledger._write_jsonl(ledger.SCORED_PATH, rows)
+    stats = accuracy.signal_stats("r5")
+    # momentum appears in 25 rows but each date has a single name -> 0 usable
+    # cross-sections -> excluded from measured stats (defaults to prior downstream).
+    assert stats.get("momentum_12_1", {}).get("n", 0) == 0
+
+
 def test_composite_accuracy_hit_rate(tmp_accuracy):
     # composite sign matches realized sign in 3/4 rows -> 75%
     rows = [

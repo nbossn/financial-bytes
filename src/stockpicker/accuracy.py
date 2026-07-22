@@ -148,7 +148,14 @@ def signal_stats(horizon: str = DEFAULT_HORIZON) -> dict[str, dict]:
         ics_by_date = [v for v in ics_by_date if not np.isnan(v)]
         icir = (float(np.mean(ics_by_date) / np.std(ics_by_date))
                 if len(ics_by_date) >= 2 and np.std(ics_by_date) > 0 else float("nan"))
-        stats[col] = {"ic": ic, "n": int(nz.sum()), "icir": icir, "hit_rate": hit}
+        # n is the shrinkage count consumed by confidence.build_confidence_matrix,
+        # which defines it as the number of INDEPENDENT CROSS-SECTIONS measured for
+        # this signal (prior_strength 60 ≈ 3 trading months of them) — the same unit
+        # engine.backtest_ic reports via n=len(ic_series). It is NOT the (ticker,date)
+        # row count: that over-counts ~#tickers-fold, collapses lambda toward 0, and
+        # lets a handful of noisy dates dictate half the weight vector. `ics_by_date`
+        # already holds exactly one usable cross-section IC per qualifying date.
+        stats[col] = {"ic": ic, "n": len(ics_by_date), "icir": icir, "hit_rate": hit}
     return stats
 
 
