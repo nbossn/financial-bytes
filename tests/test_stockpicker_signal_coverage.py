@@ -183,3 +183,35 @@ def test_weighted_signals_without_a_contribution_are_exactly_the_known_two():
 
     weighted = set(engine.PRICE_SIGNALS) | set(run.PRIOR_W)
     assert weighted - emitted == {"insider_cluster", "sentiment"}
+
+
+# --------------------------------------------------------------------------
+# The accuracy report must not claim weights are used when they are not
+# --------------------------------------------------------------------------
+
+def _weights_stub(using_measured: bool) -> dict:
+    return {
+        "generated_at": "2026-07-25", "horizon": "r5",
+        "max_obs_per_signal": 12, "using_measured": using_measured,
+        "weights": {"momentum_12_1": 1.0},
+        "rows": [{"signal": "momentum_12_1", "ic_measured": 0.1, "ic_prior": 0.045,
+                  "n": 12, "lambda_prior": 0.8, "ic_shrunk": 0.05,
+                  "hit_rate": 0.55, "weight": 1.0}],
+    }
+
+
+def test_report_does_not_claim_prior_dominated_weights_are_in_use():
+    """`load_weights` gates on using_measured; while it is False the pipeline
+    reads the universe_scores cache instead and this file is ignored."""
+    from src.stockpicker import accuracy
+    text = accuracy._running_weights_section(_weights_stub(using_measured=False))
+    assert "NOT yet used" in text
+    assert "Used by the next pipeline run." not in text
+
+
+def test_report_does_claim_measured_weights_are_in_use():
+    """Zero-control: the honest branch must still be reachable."""
+    from src.stockpicker import accuracy
+    text = accuracy._running_weights_section(_weights_stub(using_measured=True))
+    assert "Used by the next pipeline run." in text
+    assert "NOT yet used" not in text

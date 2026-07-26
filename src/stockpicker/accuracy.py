@@ -285,11 +285,31 @@ def render_scorecard(horizon: str = DEFAULT_HORIZON) -> str:
         hit = "n/a" if (r["hit_rate"] is None or np.isnan(r["hit_rate"])) else f"{r['hit_rate']*100:.0f}%"
         L.append(f"| {r['signal']} | {ic} | {hit} | {r['n']} | {r['weight']*100:.1f}% |")
 
-    L.append(f"\n## Running weights ({'MEASURED' if rw['using_measured'] else 'still prior-dominated'})\n")
-    L.append(_weights_table(rw))
-    L.append(f"\n*Source: {WEIGHTS_PATH}. Used by the next pipeline run. Weights = "
-             f"Bayesian shrink of measured IC toward literature priors by sample size.*")
+    L.append(_running_weights_section(rw))
     return "\n".join(L)
+
+
+def _running_weights_section(rw: dict) -> str:
+    """The running-weights block, including whether they are actually in use.
+
+    Only claims these weights are used when `run.load_weights` would really
+    take them. That gates on `using_measured`, so while it is False the
+    pipeline falls through to the universe_scores backtest cache and this file
+    is written, reported on, and then ignored. Claiming "used by the next
+    pipeline run" unconditionally is the kind of success statement that makes a
+    dormant loop look like a live one.
+    """
+    state = "MEASURED" if rw["using_measured"] else "still prior-dominated"
+    if rw["using_measured"]:
+        used = "Used by the next pipeline run."
+    else:
+        used = (f"NOT yet used — the pipeline needs {MIN_OBS_FOR_WEIGHTS} obs per "
+                f"signal and has {rw['max_obs_per_signal']}, so it falls back to "
+                f"the universe_scores backtest cache.")
+    return (f"\n## Running weights ({state})\n\n"
+            f"{_weights_table(rw)}\n"
+            f"\n*Source: {WEIGHTS_PATH}. {used} Weights = "
+            f"Bayesian shrink of measured IC toward literature priors by sample size.*")
 
 
 def _weights_table(rw: dict) -> str:
