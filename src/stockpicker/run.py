@@ -22,6 +22,7 @@ Output: data/stockpicker/final_picks.json + Projects/stock-picker/REPORT-<date>.
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from datetime import datetime, timezone, date
 from pathlib import Path
@@ -33,7 +34,10 @@ import pandas as pd
 import yfinance as yf
 
 from src.stockpicker import sectors, macro, finviz_data, options_data, ledger
-from src.stockpicker.engine import compute_price_signals_at, cross_sectional_z, PRICE_SIGNALS
+from src.stockpicker.engine import (
+    compute_price_signals_at, cross_sectional_z, PRICE_SIGNALS,
+    all_nan_signals, MIN_HISTORY_BARS,
+)
 from src.stockpicker.confidence import build_confidence_matrix, IC_PRIORS, PRIOR_W
 from src.stockpicker.risk import classify_risk
 from src.stockpicker.report import enrich, _z
@@ -41,6 +45,34 @@ from src.stockpicker.report import enrich, _z
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "stockpicker"
 VAULT_REPORT_DIR = Path("/mnt/c/Users/nicky/Dopple/Projects/stock-picker")
 N_PICKS = 20
+
+
+# History window for the price-signal frame.
+#
+# This was "1y" for the first 16 run dates, which yields 251 bars -> t_now=250.
+# momentum_12_1 needs t >= 252, so it returned all-NaN and contributed exactly
+# 0.0 to all 706 scored predictions while still holding ~9.6% of the weight
+# vector. It missed by two bars. engine.ic_backtest — which *derives* the
+# weights — has always used "2y", so production was computing a signal battery
+# the weights were never fit on.
+HISTORY_PERIOD = "2y"
+
+# Bar counts measured against yfinance on 2026-07-26, not assumed: a calendar
+# year is ~251 trading days, so "1y" is one bar short of a 252-day lookback
+# even before the +1 for the evaluation bar itself.
+PERIOD_BARS = {"1y": 251, "2y": 501, "5y": 1257}
+
+
+def emitted_signal_names() -> set[str]:
+    """Signals this module actually writes a contribution for.
+
+    Read out of this file's own source: the PRICE_SIGNALS loop plus every
+    literal ``contrib["name"]`` assignment. A weighted signal missing from this
+    set carries weight but can never move a composite — which is true today of
+    `insider_cluster` and `sentiment`.
+    """
+    src = Path(__file__).read_text(encoding="utf-8")
+    return set(PRICE_SIGNALS) | set(re.findall(r'contrib\[["\']([a-z0-9_]+)["\']\]', src))
 
 
 def load_weights() -> tuple[dict, str]:
@@ -81,13 +113,25 @@ def main(write_report: bool = True) -> dict:
     print(f"\n[run] {len(cand_tickers)} candidates from sector deviation + volatility")
 
     # --- price signals on candidates (need ~1y history) ---
-    dl = yf.download(cand_tickers, period="1y", auto_adjust=True, progress=False)
+    dl = yf.download(cand_tickers, period=HISTORY_PERIOD, auto_adjust=True, progress=False)
     close = dl["Close"]
     open_ = dl["Open"]
     good = [t for t in cand_tickers if t in close.columns and close[t].notna().sum() > 60]
     close, open_ = close[good], open_[good]
     t_now = len(close) - 1
+    if t_now < MIN_HISTORY_BARS - 1:
+        print(f"[run] WARNING: only {t_now + 1} bars from period={HISTORY_PERIOD}; "
+              f"price signals need {MIN_HISTORY_BARS}")
     cur = compute_price_signals_at(close, open_, t_now)
+
+    # Report signals that produced nothing. cross_sectional_z turns an all-NaN
+    # series into 0.0, so without this the composite silently loses that
+    # signal's entire weight and every downstream artifact looks healthy.
+    dead_signals = all_nan_signals(cur)
+    if dead_signals:
+        print(f"[run] WARNING: {len(dead_signals)} price signal(s) produced no "
+              f"data and contribute 0: {', '.join(dead_signals)}")
+
     z_price = {k: cross_sectional_z(v) for k, v in cur.items()}
 
     weights, weights_source = load_weights()
@@ -266,6 +310,11 @@ def main(write_report: bool = True) -> dict:
         "macro": mac, "sectors": scan["sectors"],
         "n_candidates": len(good), "tier_counts": counts, "picks": picks,
         "weights_source": weights_source,
+        "history_period": HISTORY_PERIOD,
+        "n_bars": int(t_now + 1),
+        # Recorded even when empty, so a later reader can tell "no dead signals"
+        # from "this run predates the check".
+        "dead_signals": dead_signals,
     }
     (DATA_DIR / "final_picks.json").write_text(json.dumps(out, indent=2, default=str))
     print(f"\n[run] tier counts: {counts}")

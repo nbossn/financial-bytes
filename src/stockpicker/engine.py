@@ -48,8 +48,30 @@ PRICE_SIGNALS = [
     "technical_52w",
 ]
 
+# The longest lookback any price signal reaches back for, in trading bars,
+# measured from the evaluation bar t. sig_momentum_12_1 reads close.iloc[t-252],
+# so t must be >= 252 and the frame therefore needs 253 bars at minimum.
+# Anything shorter makes momentum return all-NaN, which cross_sectional_z then
+# converts into a clean 0.0 — see all_nan_signals() below.
+MAX_SIGNAL_LOOKBACK = 252
+MIN_HISTORY_BARS = MAX_SIGNAL_LOOKBACK + 1
+
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "stockpicker"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def all_nan_signals(sigs: dict[str, pd.Series]) -> list[str]:
+    """Names of signals that produced no usable value for any ticker.
+
+    Measures the computed frame rather than predicting from the bar count, so
+    it also catches a signal killed by missing data rather than by a short
+    window. A signal with even one finite value is live — only a total absence
+    is reported, because that is the case cross_sectional_z silently zeroes.
+    """
+    return sorted(
+        name for name, s in sigs.items()
+        if not np.isfinite(np.asarray(s, dtype=float)).any()
+    )
 
 
 # ---------------------------------------------------------------------------
