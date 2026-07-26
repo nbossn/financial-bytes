@@ -78,3 +78,6 @@ geckodriver
 
 # Multi-portfolio config (contains personal paths/emails)
 # Note: portfolios.json already listed above under Sensitive data
+
+# Process-freshness snapshots (runtime state, not source)
+var/

@@ -205,12 +205,27 @@ def test_empty_tree_reports_no_source(tmp_path):
 
 # ---------------------------------------------------------------- the check
 
+def _baseline(root, target):
+    """A content snapshot recorded before `target` launched, in a temp manifest.
+
+    Staleness is a claim about content diverging from what the process loaded,
+    so establishing it needs a from-before-launch baseline. Tests that only
+    move mtime were asserting the false positive fixed on 2026-07-26.
+    """
+    man = root.parent / "manifest.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start - 60)
+    return man
+
+
 def test_stale_when_code_is_newer_than_the_process(target, src_tree):
     """The 20-day blackout, in one assertion."""
     root, f = src_tree
+    man = _baseline(root, target)
+    f.write_text("x = 'the fix that never shipped'\n")   # real content change
     future = time.time() + 120
     os.utime(f, (future, future))
-    r = check(MAGIC, root)
+    r = check(MAGIC, root, manifest_path=man)
     assert r.state == RUNNING_STALE
     assert r.pids == [target.pid]
     assert r.newest_source_path == f
@@ -232,39 +247,380 @@ def test_not_running_reports_that_and_not_staleness(src_tree):
     assert r.pids == []
 
 
-def test_all_three_states_are_reachable(target, src_tree):
+def test_all_four_states_are_reachable(target, src_tree):
     """No state may be unreachable by construction.
 
     A checker only ever observed returning one value is indistinguishable from
-    one that cannot return the others.
+    one that cannot return the others. UNKNOWN is included deliberately: it was
+    added to stop a false STALE, and an escape hatch that swallows the real
+    STALE would be worse than the bug it replaced.
     """
     root, f = src_tree
+    man = _baseline(root, target)
     seen = set()
 
+    f.write_text("x = 2\n")                              # content differs
     os.utime(f, (time.time() + 120,) * 2)
-    seen.add(check(MAGIC, root).state)
-    os.utime(f, (time.time() - 5000,) * 2)
-    seen.add(check(MAGIC, root).state)
+    seen.add(check(MAGIC, root, manifest_path=man).state)
+
+    os.utime(f, (time.time() - 5000,) * 2)               # predates launch
+    seen.add(check(MAGIC, root, manifest_path=man).state)
+
+    os.utime(f, (time.time() + 120,) * 2)                # touched, no baseline
+    seen.add(check(MAGIC, root, manifest_path=root.parent / "absent.json").state)
+
     seen.add(check("zz-nothing-here-at-all", root).state)
 
-    assert seen == {RUNNING_STALE, RUNNING_FRESH, NOT_RUNNING}
+    assert seen == {RUNNING_STALE, RUNNING_FRESH, NOT_RUNNING, RUNNING_UNKNOWN}
 
 
 def test_exit_codes_are_distinct(target, src_tree):
-    """The cron caller branches on exit code, so the three must not collide."""
+    """The cron caller branches on exit code, so the four must not collide."""
     root, f = src_tree
+    man = _baseline(root, target)
+    f.write_text("x = 2\n")
     os.utime(f, (time.time() + 120,) * 2)
-    stale = check(MAGIC, root).exit_code
+    stale = check(MAGIC, root, manifest_path=man).exit_code
+    unknown = check(MAGIC, root, manifest_path=root.parent / "absent.json").exit_code
     os.utime(f, (time.time() - 5000,) * 2)
-    fresh = check(MAGIC, root).exit_code
+    fresh = check(MAGIC, root, manifest_path=man).exit_code
     absent = check("zz-nothing-here-at-all", root).exit_code
-    assert len({stale, fresh, absent}) == 3
+    assert len({stale, fresh, absent, unknown}) == 4
     assert fresh == 0, "the healthy case must be exit 0"
 
 
 def test_summary_names_the_offending_file(target, src_tree):
     root, f = src_tree
+    man = _baseline(root, target)
+    f.write_text("x = 2\n")
     os.utime(f, (time.time() + 120,) * 2)
-    summary = check(MAGIC, root).summary()
+    summary = check(MAGIC, root, manifest_path=man).summary()
     assert "mod.py" in summary
     assert "STALE" in summary.upper()
+
+
+# ------------------------------------------------- content vs mtime (block 6)
+#
+# The first live run of this checker reported STALE for a scheduler that was
+# running byte-identical code, and named its own source file as the culprit.
+# Two independent causes, both of which produce a false alarm:
+#
+#   1. mtime is not content. Block 5's mutation testing rewrote src/scheduler.py
+#      back to identical bytes; its mtime moved to "tonight" while its content
+#      had not changed since 2026-06-25 — before the process even started.
+#   2. An added module cannot make already-running code stale. src/ops/ was
+#      created after the process launched and nothing imports it.
+#
+# A guard whose first live output is a false alarm is a guard that gets ignored,
+# which is precisely how the 20-day blackout stayed invisible. So STALE now
+# requires a *content* change to a file that already existed. mtime is kept as
+# the trigger, because it is the one signal that survives a branch checkout —
+# dropping it would trade a false positive for a false negative, and the false
+# negative is the one that cost 20 days.
+
+from src.ops.process_freshness import (  # noqa: E402
+    RUNNING_UNKNOWN,
+    changed_files,
+    load_manifest,
+    save_manifest,
+    source_hashes,
+)
+
+
+def test_source_hashes_are_content_not_mtime(src_tree):
+    root, f = src_tree
+    before = source_hashes(root)
+    os.utime(f, (time.time() + 500, time.time() + 500))   # touch, do not edit
+    assert source_hashes(root) == before, "hash must not move when only mtime does"
+
+
+def test_source_hashes_change_when_content_changes(src_tree):
+    root, f = src_tree
+    before = source_hashes(root)
+    f.write_text("x = 2\n")
+    assert source_hashes(root) != before
+
+
+def test_source_hashes_skip_pycache(src_tree):
+    root, _ = src_tree
+    cache = root / "pkg" / "__pycache__"
+    cache.mkdir()
+    (cache / "mod.cpython-312.pyc").write_bytes(b"\x00\x01")
+    assert all("__pycache__" not in k for k in source_hashes(root))
+
+
+def test_changed_files_reports_modifications(src_tree):
+    base = {"a.py": "h1", "b.py": "h2"}
+    assert changed_files(base, {"a.py": "h1", "b.py": "CHANGED"}) == ["b.py"]
+
+
+def test_changed_files_ignores_additions(src_tree):
+    """A module that did not exist at launch cannot be code the process imported."""
+    base = {"a.py": "h1"}
+    assert changed_files(base, {"a.py": "h1", "new.py": "h9"}) == []
+
+
+def test_changed_files_reports_deletions(src_tree):
+    """A deleted module IS a divergence — the process may still hold it."""
+    assert changed_files({"a.py": "h1", "b.py": "h2"}, {"a.py": "h1"}) == ["b.py"]
+
+
+def test_manifest_roundtrips(tmp_path):
+    p = tmp_path / "m.json"
+    save_manifest(p, {"a.py": "h1"}, 1000.0)
+    at, hashes = load_manifest(p)
+    assert at == 1000.0 and hashes == {"a.py": "h1"}
+
+
+def test_manifest_keeps_history_and_picks_newest_before(tmp_path):
+    """Choosing the newest snapshot at-or-before the process start needs history."""
+    p = tmp_path / "m.json"
+    save_manifest(p, {"a.py": "old"}, 100.0)
+    save_manifest(p, {"a.py": "mid"}, 200.0)
+    save_manifest(p, {"a.py": "new"}, 300.0)
+    assert load_manifest(p, before=250.0) == (200.0, {"a.py": "mid"})
+    assert load_manifest(p, before=50.0) == (None, None)   # nothing old enough
+
+
+def test_missing_manifest_is_none_not_empty(tmp_path):
+    """An empty dict would read as 'nothing changed' — a fail-open. Must be None."""
+    assert load_manifest(tmp_path / "absent.json") == (None, None)
+
+
+def test_corrupt_manifest_is_none_not_empty(tmp_path):
+    p = tmp_path / "m.json"
+    p.write_text("{not json")
+    assert load_manifest(p) == (None, None)
+
+
+# ------------------------------------------------------------ check() verdicts
+
+def test_touched_but_unchanged_is_fresh_not_stale(target, src_tree):
+    """The exact false positive observed live on 2026-07-26."""
+    root, f = src_tree
+    man = root.parent / "m.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start - 60)    # baseline predates launch
+    os.utime(f, (time.time() + 500, time.time() + 500))    # mtime moves, content does not
+    r = check(MAGIC, root, manifest_path=man)
+    assert r.state == RUNNING_FRESH, r.summary()
+
+
+def test_real_content_change_is_still_stale(target, src_tree):
+    """The false positive fix must not cost the true positive."""
+    root, f = src_tree
+    man = root.parent / "m.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start - 60)
+    f.write_text("x = 999\n")
+    os.utime(f, (time.time() + 500, time.time() + 500))
+    r = check(MAGIC, root, manifest_path=man)
+    assert r.state == RUNNING_STALE, r.summary()
+    assert "mod.py" in r.summary()
+
+
+def test_added_module_alone_is_not_stale(target, src_tree):
+    root, _ = src_tree
+    man = root.parent / "m.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start - 60)
+    new = root / "pkg" / "brand_new.py"
+    new.write_text("y = 1\n")
+    os.utime(new, (time.time() + 500, time.time() + 500))
+    r = check(MAGIC, root, manifest_path=man)
+    assert r.state == RUNNING_FRESH, r.summary()
+
+
+def test_no_usable_baseline_is_unknown_not_stale(target, src_tree):
+    """No snapshot from before launch => we cannot know. Say so; do not guess."""
+    root, f = src_tree
+    man = root.parent / "m.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start + 60)    # baseline is TOO NEW
+    f.write_text("x = 3\n")
+    os.utime(f, (time.time() + 500, time.time() + 500))
+    r = check(MAGIC, root, manifest_path=man)
+    assert r.state == RUNNING_UNKNOWN, r.summary()
+    assert "mod.py" in r.summary(), "UNKNOWN must still name what moved"
+
+
+def test_nothing_touched_since_launch_needs_no_manifest(target, src_tree):
+    """The common healthy case must not degrade to UNKNOWN."""
+    root, f = src_tree
+    os.utime(f, (time.time() - 99999, time.time() - 99999))
+    r = check(MAGIC, root, manifest_path=root.parent / "absent.json")
+    assert r.state == RUNNING_FRESH, r.summary()
+
+
+def test_unknown_has_its_own_exit_code(target, src_tree):
+    root, f = src_tree
+    man = root.parent / "m.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start + 60)
+    f.write_text("x = 4\n")
+    os.utime(f, (time.time() + 500, time.time() + 500))
+    codes = {check(MAGIC, root, manifest_path=man).exit_code}
+    assert codes == {3}, "UNKNOWN must be distinguishable from fresh(0)/down(1)/stale(2)"
+
+
+def test_the_checker_does_not_report_its_own_source(target, tmp_path):
+    """A guard that names itself as the fault is shape-matching, not detection.
+
+    Positive control included: the same scan must still see a sibling file, or
+    'found nothing' would be indistinguishable from 'excluded everything'.
+    """
+    root = tmp_path / "src"
+    (root / "ops").mkdir(parents=True)
+    me = root / "ops" / "process_freshness.py"
+    me.write_text("# stand-in for this module\n")
+    sibling = root / "ops" / "other.py"
+    sibling.write_text("z = 1\n")
+    hashes = source_hashes(root, exclude={"ops/process_freshness.py"})
+    assert "ops/other.py" in hashes, "positive control: scan must still find siblings"
+    assert "ops/process_freshness.py" not in hashes
+
+
+def test_check_itself_excludes_this_module(target, tmp_path):
+    """Closing a gap: the exclusion test above only exercised source_hashes().
+
+    Asserting a helper honours `exclude` says nothing about whether check()
+    passes it — that is a test of a mechanism the caller may never read. This
+    drives it through the real entry point, with a positive control so that
+    "reported FRESH" cannot be confused with "scanned nothing".
+    """
+    root = tmp_path / "src"
+    (root / "ops").mkdir(parents=True)
+    me = root / "ops" / "process_freshness.py"
+    me.write_text("# stand-in\n")
+    sibling = root / "ops" / "other.py"
+    sibling.write_text("z = 1\n")
+
+    man = root.parent / "manifest.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root, exclude={"ops/process_freshness.py"}), start - 60)
+
+    future = (time.time() + 300,) * 2
+    me.write_text("# stand-in, edited\n")          # only the checker changed
+    os.utime(me, future)
+    assert check(MAGIC, root, manifest_path=man).state == RUNNING_FRESH
+
+    sibling.write_text("z = 2\n")                  # positive control: a real one
+    os.utime(sibling, future)
+    r = check(MAGIC, root, manifest_path=man)
+    assert r.state == RUNNING_STALE, "control: a non-self change must still be caught"
+    assert "ops/other.py" in r.changed and "ops/process_freshness.py" not in r.changed
+
+
+def test_a_legacy_manifest_containing_this_module_is_still_ignored(target, tmp_path):
+    """The case that makes the self-exclusion load-bearing.
+
+    A mutation removing `exclude={SELF_RELPATH}` from the scan left all 35
+    tests green, because check() writes the manifest already-excluded so the
+    key is never in the baseline. A hand-written or older manifest can carry
+    it — this builds exactly that and asserts an edit to the guard does not
+    indict the process it guards. Positive control at the end.
+    """
+    root = tmp_path / "src"
+    (root / "ops").mkdir(parents=True)
+    me = root / "ops" / "process_freshness.py"
+    me.write_text("# v1\n")
+    sibling = root / "ops" / "other.py"
+    sibling.write_text("z = 1\n")
+
+    man = root.parent / "manifest.json"
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start - 60)   # NOT excluded — legacy shape
+    assert "ops/process_freshness.py" in load_manifest(man, before=start)[1], (
+        "control: the baseline must really contain the key under test"
+    )
+
+    future = (time.time() + 300,) * 2
+    me.write_text("# v2 — the guard itself was edited\n")
+    os.utime(me, future)
+    assert check(MAGIC, root, manifest_path=man).state == RUNNING_FRESH
+
+    sibling.write_text("z = 2\n")                         # control: a real change
+    os.utime(sibling, future)
+    assert check(MAGIC, root, manifest_path=man).state == RUNNING_STALE
+
+
+def test_unknown_report_does_not_name_this_module(target, tmp_path):
+    """The cosmetic half of the original false alarm.
+
+    The live 2026-07-26 run said "STALE ... process_freshness.py changed" —
+    the guard naming itself. Even in UNKNOWN, where no verdict is claimed, the
+    file list must not point at the guard. Positive control: a sibling that was
+    genuinely touched still has to appear, or an empty list would pass.
+    """
+    root = tmp_path / "src"
+    (root / "ops").mkdir(parents=True)
+    me = root / "ops" / "process_freshness.py"
+    me.write_text("# v1\n")
+    sibling = root / "ops" / "other.py"
+    sibling.write_text("z = 1\n")
+
+    future = (time.time() + 300,) * 2
+    os.utime(me, future)
+    os.utime(sibling, future)
+
+    r = check(MAGIC, root, manifest_path=root.parent / "absent.json")
+    assert r.state == RUNNING_UNKNOWN
+    assert "ops/other.py" in r.touched, "control: a real touched file must be listed"
+    assert "ops/process_freshness.py" not in r.touched
+    assert "process_freshness.py" not in r.summary()
+
+
+# ------------------------------------------------------------------ recording
+
+def test_check_records_a_snapshot_when_asked(target, src_tree):
+    root, _ = src_tree
+    man = root.parent / "m.json"
+    assert load_manifest(man) == (None, None)          # control: nothing there yet
+    check(MAGIC, root, manifest_path=man, record=True)
+    at, hashes = load_manifest(man)
+    assert at is not None and "pkg/mod.py" in hashes
+
+
+def test_check_does_not_record_by_default(target, src_tree):
+    root, _ = src_tree
+    man = root.parent / "m.json"
+    check(MAGIC, root, manifest_path=man)
+    assert load_manifest(man) == (None, None)
+
+
+def test_cli_records_by_default(target, src_tree, capsys):
+    """Without this the mechanism can never converge: no recorded snapshot ever
+    predates a process start, so every answer is UNKNOWN forever."""
+    from src.ops.process_freshness import main
+    root, _ = src_tree
+    man = root.parent / "m.json"
+    main(["--pattern", MAGIC, "--source-root", str(root), "--manifest", str(man)])
+    assert load_manifest(man)[1] is not None, "the CLI must record by default"
+
+
+def test_cli_no_record_flag_suppresses_it(target, src_tree, capsys):
+    from src.ops.process_freshness import main
+    root, _ = src_tree
+    man = root.parent / "m.json"
+    main(["--pattern", MAGIC, "--source-root", str(root),
+          "--manifest", str(man), "--no-record"])
+    assert load_manifest(man) == (None, None)
+
+
+def test_recorded_snapshot_makes_the_next_check_exact(target, src_tree):
+    """End-to-end: record, restart-equivalent, edit, get a real verdict.
+
+    Simulates convergence by recording a snapshot and backdating it to before
+    the process start — the state a daily cron run reaches on its own after one
+    restart cycle.
+    """
+    root, f = src_tree
+    man = root.parent / "m.json"
+    check(MAGIC, root, manifest_path=man, record=True)
+    start = process_start_time(find_processes(MAGIC)[0])
+    save_manifest(man, source_hashes(root), start - 60)
+
+    assert check(MAGIC, root, manifest_path=man).state == RUNNING_FRESH
+    f.write_text("x = 'changed'\n")
+    os.utime(f, (time.time() + 300,) * 2)
+    assert check(MAGIC, root, manifest_path=man).state == RUNNING_STALE

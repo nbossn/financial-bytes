@@ -25,6 +25,8 @@ CLI:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -34,13 +36,25 @@ from pathlib import Path
 # What the scheduler's command line looks like (see the @reboot crontab entry).
 DEFAULT_PATTERN = "financial-bytes schedule"
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
+DEFAULT_MANIFEST = Path(__file__).resolve().parents[2] / "var" / "freshness-manifest.json"
+
+# This module's own path relative to the source root. A guard that reports
+# itself as the fault is shape-matching, not detection — see the 2026-07-26
+# false alarm in the module docstring.
+SELF_RELPATH = "ops/process_freshness.py"
+
+# How many snapshots to retain. Enough to survive a long-lived process; small
+# enough that the file stays human-readable.
+MANIFEST_HISTORY = 20
 
 NOT_RUNNING = "not_running"
 RUNNING_STALE = "running_stale"
 RUNNING_FRESH = "running_fresh"
+RUNNING_UNKNOWN = "running_unknown"
 
 # Distinct so a cron caller can branch on them. 0 is the healthy case.
-EXIT_CODES = {RUNNING_FRESH: 0, NOT_RUNNING: 1, RUNNING_STALE: 2}
+# 3 is deliberately NOT folded into 0 or 2: "cannot tell" is its own answer.
+EXIT_CODES = {RUNNING_FRESH: 0, NOT_RUNNING: 1, RUNNING_STALE: 2, RUNNING_UNKNOWN: 3}
 
 _PROC = Path("/proc")
 
@@ -155,6 +169,79 @@ def newest_source_mtime(root: Path) -> tuple[float | None, Path | None]:
     return newest_m, newest_p
 
 
+def source_hashes(root: Path, exclude: set[str] | None = None) -> dict[str, str]:
+    """{relative posix path: sha256} for every .py under `root`.
+
+    Content, not mtime. The two diverge constantly in practice: a mutation-test
+    run, a `git checkout`, or a formatter rewriting a file to identical bytes
+    all move mtime while leaving the code the process imported unchanged.
+    """
+    skip = set(exclude or ())
+    out: dict[str, str] = {}
+    for path in sorted(Path(root).rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel in skip:
+            continue
+        try:
+            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return out
+
+
+def changed_files(baseline: dict[str, str], current: dict[str, str]) -> list[str]:
+    """Files whose content diverged from `baseline`. Additions are NOT changes.
+
+    A module that did not exist when the process launched cannot be code the
+    process imported and then went stale against — at worst a deferred import
+    picks up the *new* file, which is fresh by definition. Deletions do count:
+    the process may still hold a module that is no longer on disk.
+    """
+    return sorted(
+        rel for rel, digest in baseline.items() if current.get(rel) != digest
+    )
+
+
+def save_manifest(path: Path, hashes: dict[str, str], recorded_at: float) -> None:
+    """Append a snapshot, keeping the most recent MANIFEST_HISTORY entries."""
+    path = Path(path)
+    try:
+        existing = json.loads(path.read_text()).get("snapshots", [])
+    except (OSError, ValueError, AttributeError):
+        existing = []
+    existing.append({"recorded_at": recorded_at, "hashes": hashes})
+    existing.sort(key=lambda s: s.get("recorded_at", 0.0))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"snapshots": existing[-MANIFEST_HISTORY:]}, indent=2, sort_keys=True)
+    )
+
+
+def load_manifest(
+    path: Path, before: float | None = None
+) -> tuple[float | None, dict[str, str] | None]:
+    """Newest snapshot recorded at-or-before `before`, else (None, None).
+
+    Returns None rather than {} when there is nothing usable. An empty dict
+    would compare equal to everything and read as "nothing changed" — a
+    fail-open in a module that exists because a fail-open cost 20 days.
+    """
+    try:
+        snapshots = json.loads(Path(path).read_text())["snapshots"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+    usable = [
+        s for s in snapshots
+        if before is None or s.get("recorded_at", float("inf")) <= before
+    ]
+    if not usable:
+        return None, None
+    newest = max(usable, key=lambda s: s.get("recorded_at", 0.0))
+    return newest.get("recorded_at"), newest.get("hashes")
+
+
 @dataclass
 class FreshnessResult:
     state: str
@@ -162,6 +249,8 @@ class FreshnessResult:
     started_at: float | None = None
     newest_source_mtime: float | None = None
     newest_source_path: Path | None = None
+    changed: list[str] = field(default_factory=list)
+    touched: list[str] = field(default_factory=list)
 
     @property
     def exit_code(self) -> int:
@@ -178,19 +267,45 @@ class FreshnessResult:
             return "DOWN — no scheduler process found. Restart it."
         started = datetime.fromtimestamp(self.started_at).isoformat(timespec="seconds")
         if self.state == RUNNING_FRESH:
-            return f"OK — pid {self.pids[0]} started {started}, newer than all source."
+            return (
+                f"OK — pid {self.pids[0]} started {started}; no imported source "
+                "has changed content since."
+            )
         age_h = (self.stale_by_seconds or 0) / 3600
+        if self.state == RUNNING_UNKNOWN:
+            return (
+                f"UNKNOWN — pid {self.pids[0]} started {started}, and "
+                f"{len(self.touched)} file(s) were written up to {age_h:.1f}h "
+                f"later ({', '.join(self.touched[:5])}). No content snapshot from "
+                "before that launch exists, so whether the code actually changed "
+                "cannot be established. Re-run after the next restart for an "
+                "exact answer."
+            )
         return (
             f"STALE — pid {self.pids[0]} started {started}, but "
-            f"{self.newest_source_path} changed {age_h:.1f}h later. "
+            f"{len(self.changed)} file(s) changed content since "
+            f"({', '.join(self.changed[:5])}), up to {age_h:.1f}h later. "
             "The process is serving code older than the working tree; "
             "restart it or the fix is not live."
         )
 
 
-def check(pattern: str = DEFAULT_PATTERN, source_root: Path | None = None) -> FreshnessResult:
-    """Classify the scheduler as down, stale, or fresh."""
+def check(
+    pattern: str = DEFAULT_PATTERN,
+    source_root: Path | None = None,
+    manifest_path: Path | None = None,
+    record: bool = False,
+) -> FreshnessResult:
+    """Classify the scheduler as down, fresh, stale, or unknown.
+
+    Two-stage on purpose. mtime is the *trigger*: it is the only signal that
+    survives a `git checkout` (which stamps old content with a new mtime), so
+    dropping it would trade today's false positive for a false negative — and
+    the false negative is the failure that cost 20 days. Content is the
+    *verdict*: mtime moving is necessary but not sufficient for staleness.
+    """
     root = Path(source_root) if source_root is not None else DEFAULT_SOURCE_ROOT
+    manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST
     pids = find_processes(pattern)
     if not pids:
         return FreshnessResult(NOT_RUNNING)
@@ -200,14 +315,49 @@ def check(pattern: str = DEFAULT_PATTERN, source_root: Path | None = None) -> Fr
         default=None,
     )
     newest_m, newest_p = newest_source_mtime(root)
+    # Not excluded here: filtering the baseline below is what actually decides
+    # the verdict, and a second exclusion on this side is invisible to every
+    # test (mutation M4b survived a full suite). One tested mechanism beats two
+    # where only one can fail.
+    current = source_hashes(root)
+    if record and started is not None:
+        save_manifest(manifest, current, datetime.now().timestamp())
 
     # No source or no start time -> we cannot show it is stale, so don't claim it.
     if started is None or newest_m is None:
-        state = RUNNING_FRESH
-    else:
-        state = RUNNING_STALE if newest_m > started else RUNNING_FRESH
+        return FreshnessResult(RUNNING_FRESH, pids, started, newest_m, newest_p)
 
-    return FreshnessResult(state, pids, started, newest_m, newest_p)
+    # Nothing was written since launch. No baseline needed for that answer, so
+    # the healthy case never degrades to UNKNOWN.
+    if newest_m <= started:
+        return FreshnessResult(RUNNING_FRESH, pids, started, newest_m, newest_p)
+
+    touched = sorted(
+        path.relative_to(root).as_posix()
+        for path in Path(root).rglob("*.py")
+        if "__pycache__" not in path.parts
+        and path.relative_to(root).as_posix() != SELF_RELPATH
+        and path.stat().st_mtime > started
+    )
+    _at, baseline = load_manifest(manifest, before=started)
+    if baseline is None:
+        state, changed = RUNNING_UNKNOWN, []
+    else:
+        # Drop this module from BOTH sides, not just the scan. Excluding it only
+        # from `current` is unreachable: check() writes the manifest already
+        # excluded, so the key is absent from the baseline and the
+        # additions-are-not-changes rule hides it anyway — a mutation removing
+        # that exclusion left all 35 tests green. A manifest written by an
+        # older build (or by hand) *can* carry the key, and then an edit to the
+        # guard would report the scheduler stale. Filtering the baseline is what
+        # actually closes that.
+        baseline = {k: v for k, v in baseline.items() if k != SELF_RELPATH}
+        changed = changed_files(baseline, current)
+        state = RUNNING_STALE if changed else RUNNING_FRESH
+
+    return FreshnessResult(
+        state, pids, started, newest_m, newest_p, changed=changed, touched=touched
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -216,9 +366,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--pattern", default=DEFAULT_PATTERN)
     ap.add_argument("--source-root", type=Path, default=None)
+    ap.add_argument("--manifest", type=Path, default=None)
+    # Recording is ON by default and that is the whole design. The content
+    # baseline can only come from a snapshot taken before the process started,
+    # so a check that never records can only ever answer UNKNOWN — a converging
+    # mechanism that never converges. Each run pays for the next one.
+    ap.add_argument("--no-record", dest="record", action="store_false", default=True)
     args, _unknown = ap.parse_known_args(argv)
 
-    result = check(args.pattern, args.source_root)
+    result = check(args.pattern, args.source_root, args.manifest, record=args.record)
     stamp = datetime.now().isoformat(timespec="seconds")
     print(f"[{stamp}] scheduler-freshness: {result.summary()}")
     return result.exit_code
