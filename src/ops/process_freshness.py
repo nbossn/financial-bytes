@@ -25,6 +25,7 @@ CLI:
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -42,6 +43,20 @@ DEFAULT_MANIFEST = Path(__file__).resolve().parents[2] / "var" / "freshness-mani
 # itself as the fault is shape-matching, not detection — see the 2026-07-26
 # false alarm in the module docstring.
 SELF_RELPATH = "ops/process_freshness.py"
+
+# Where the scheduler process's import graph starts. This is `src/cli.py`, NOT
+# `src/scheduler.py`, and the difference is the whole reason this constant is
+# spelled out rather than inferred: the process argv reads
+# `.../bin/financial-bytes schedule`, but that console script is generated from
+# pyproject's [tool.poetry.scripts] and its body is `from src.cli import cli`.
+#
+# Measured 2026-07-27: a closure rooted at scheduler.py is 52 modules and omits
+# 16 the process genuinely imports, including every src/alerts/* module.
+# Omitting an imported module makes it read FRESH while the process serves old
+# code — precisely the 20-day blackout above, reintroduced by the guard meant
+# to catch it. A test pins this to the declaration in pyproject.toml so a
+# rename fails loudly instead of quietly narrowing the scope.
+DEFAULT_ENTRYPOINT = "cli.py"
 
 # How many snapshots to retain. Enough to survive a long-lived process; small
 # enough that the file stays human-readable.
@@ -180,7 +195,92 @@ def process_start_time(pid: int) -> float | None:
     return boot + starttime_ticks / os.sysconf("SC_CLK_TCK")
 
 
-def newest_source_mtime(root: Path) -> tuple[float | None, Path | None]:
+def import_closure(root: Path, entrypoint: str | None = None) -> set[str] | None:
+    """Every module under `root` reachable from `entrypoint`, or None.
+
+    Returns relative posix paths. None means the entry point does not exist —
+    the caller must then fall back to scanning the whole tree. It must NOT
+    fall back to an empty scope: an empty scope reports every process fresh
+    forever, which is the fail-open this module was written to end.
+
+    Why a static AST walk and not `sys.modules`: the thing being judged is a
+    *different* process, and it imports almost nothing at launch. The
+    scheduler's launch-time closure inside this repo is two files; every job
+    module is imported inside a function body at first call, hours or days
+    later. So "what has it imported" is unanswerable from outside, while "what
+    could it ever import" is exact and errs toward including too much — the
+    conservative direction, because an over-broad scope can only over-report.
+
+    Imports at any nesting depth count. A module imported inside a function is
+    still imported once and cached for the life of the process, so it goes
+    stale exactly like a top-level one.
+    """
+    root = Path(root)
+    entry = root / (entrypoint or DEFAULT_ENTRYPOINT)
+    if not entry.is_file():
+        return None
+    package = root.name
+
+    def resolve(dotted: str) -> Path | None:
+        parts = dotted.split(".")
+        if not parts or parts[0] != package:
+            return None                  # third-party or stdlib; not our code
+        rest = parts[1:]
+        if rest:
+            module = root.joinpath(*rest).with_suffix(".py")
+            if module.is_file():
+                return module
+        init = root.joinpath(*rest, "__init__.py")
+        return init if init.is_file() else None
+
+    def dotted_names(node: ast.AST, path: Path) -> list[str]:
+        if isinstance(node, ast.Import):
+            return [alias.name for alias in node.names]
+        if not isinstance(node, ast.ImportFrom):
+            return []
+        base = [package, *Path(path).relative_to(root).parts[:-1]]
+        if node.level:                   # `from . import x` / `from ..pkg import y`
+            keep = len(base) - (node.level - 1)
+            base = base[:keep] if keep > 0 else base[:1]
+        elif node.module:
+            base = []
+        prefix = ".".join([*base, node.module] if node.module else base)
+        if not prefix:
+            return []
+        # Both forms: `from a.b import c` may name a module OR an attribute.
+        return [prefix, *(f"{prefix}.{alias.name}" for alias in node.names)]
+
+    seen: set[Path] = set()
+    queue: list[Path] = [entry]
+    package_init = root / "__init__.py"
+    if package_init.is_file():
+        queue.append(package_init)       # importing src.anything runs src/__init__
+
+    while queue:
+        path = queue.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        # Deliberately NOT caught. A file that fails to parse would drop itself
+        # and everything downstream of it out of scope, and a silently smaller
+        # closure is indistinguishable from a correct one — it just stops
+        # watching. Loud beats narrow.
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            for dotted in dotted_names(node, path):
+                parts = dotted.split(".")
+                # Importing a.b.c also imports a and a.b.
+                for depth in range(1, len(parts) + 1):
+                    found = resolve(".".join(parts[:depth]))
+                    if found is not None and found not in seen:
+                        queue.append(found)
+
+    return {p.relative_to(root).as_posix() for p in seen}
+
+
+def newest_source_mtime(
+    root: Path, include: set[str] | None = None
+) -> tuple[float | None, Path | None]:
     """(mtime, path) of the most recently modified .py under `root`.
 
     Only .py counts: a .pyc is a *product* of an import, so including it would
@@ -190,6 +290,8 @@ def newest_source_mtime(root: Path) -> tuple[float | None, Path | None]:
     newest_p: Path | None = None
     for path in Path(root).rglob("*.py"):
         if "__pycache__" in path.parts:
+            continue
+        if include is not None and path.relative_to(root).as_posix() not in include:
             continue
         try:
             m = path.stat().st_mtime
@@ -282,6 +384,7 @@ class FreshnessResult:
     newest_source_path: Path | None = None
     changed: list[str] = field(default_factory=list)
     touched: list[str] = field(default_factory=list)
+    scope: str = ""
 
     @property
     def exit_code(self) -> int:
@@ -305,10 +408,11 @@ class FreshnessResult:
         started = "no later than " + datetime.fromtimestamp(
             self.started_at
         ).isoformat(timespec="seconds")
+        scope = f" [{self.scope}]" if self.scope else ""
         if self.state == RUNNING_FRESH:
             return (
                 f"OK — pid {self.pids[0]} started {started}; no imported source "
-                "has changed content since."
+                f"has changed content since.{scope}"
             )
         age_h = (self.stale_by_seconds or 0) / 3600
         if self.state == RUNNING_UNKNOWN:
@@ -318,14 +422,14 @@ class FreshnessResult:
                 f"later ({', '.join(self.touched[:5])}). No content snapshot from "
                 "before that launch exists, so whether the code actually changed "
                 "cannot be established. Re-run after the next restart for an "
-                "exact answer."
+                f"exact answer.{scope}"
             )
         return (
             f"STALE — pid {self.pids[0]} started {started}, but "
             f"{len(self.changed)} file(s) changed content since "
             f"({', '.join(self.changed[:5])}), up to {age_h:.1f}h later. "
             "The process is serving code older than the working tree; "
-            "restart it or the fix is not live."
+            f"restart it or the fix is not live.{scope}"
         )
 
 
@@ -334,6 +438,7 @@ def check(
     source_root: Path | None = None,
     manifest_path: Path | None = None,
     record: bool = False,
+    entrypoint: str | None = None,
 ) -> FreshnessResult:
     """Classify the scheduler as down, fresh, stale, or unknown.
 
@@ -349,33 +454,68 @@ def check(
     if not pids:
         return FreshnessResult(NOT_RUNNING)
 
+    # Scope the comparison to code this process can actually import. Without
+    # it the check charges the scheduler for edits to src/stockpicker/, which
+    # belongs to a different consumer entirely — `scripts/stockpicker-nightly.sh`
+    # runs `python -m src.stockpicker.*` under its own 23:30 cron entry, a
+    # fresh interpreter each time, so it re-imports everything and can never be
+    # stale. Measured 2026-07-27: 85 .py under src/, 68 reachable, 17 not, 13 of
+    # them stockpicker/ — and stockpicker/ is the most actively edited part of
+    # the repo, so the noise was loudest where it meant least.
+    scope_set = import_closure(root, entrypoint)
+    if scope_set is None:
+        # Entry point missing or renamed: degrade to the old whole-tree scan.
+        # Over-reporting is survivable; scoping to nothing is the fail-open.
+        total = len(source_hashes(root))
+        scope = f"scope: whole tree, {total} modules — no entry point to narrow it"
+    else:
+        total = sum(
+            1 for p in Path(root).rglob("*.py") if "__pycache__" not in p.parts
+        )
+        scope = (
+            f"scope: {len(scope_set)} of {total} modules reachable from "
+            f"{entrypoint or DEFAULT_ENTRYPOINT}"
+        )
+
     started = min(
         (t for t in (process_start_time(p) for p in pids) if t is not None),
         default=None,
     )
-    newest_m, newest_p = newest_source_mtime(root)
+    newest_m, newest_p = newest_source_mtime(root, include=scope_set)
     # Not excluded here: filtering the baseline below is what actually decides
     # the verdict, and a second exclusion on this side is invisible to every
     # test (mutation M4b survived a full suite). One tested mechanism beats two
     # where only one can fail.
+    # Deliberately UNSCOPED, and the scope filter lives on the baseline side
+    # only. `changed_files` walks the baseline, so filtering `current` cannot
+    # change any verdict — verified by mutation: removing it left all 58 tests
+    # green, which is the M4b shape this module already carries a comment
+    # about. Recording the whole tree is also the more robust choice: the
+    # reachable set changes whenever someone adds an import, and a manifest
+    # that captured everything stays usable across that change.
     current = source_hashes(root)
     if record and started is not None:
         save_manifest(manifest, current, datetime.now().timestamp())
 
     # No source or no start time -> we cannot show it is stale, so don't claim it.
     if started is None or newest_m is None:
-        return FreshnessResult(RUNNING_FRESH, pids, started, newest_m, newest_p)
+        return FreshnessResult(
+            RUNNING_FRESH, pids, started, newest_m, newest_p, scope=scope
+        )
 
     # Nothing was written since launch. No baseline needed for that answer, so
     # the healthy case never degrades to UNKNOWN.
     if newest_m <= started:
-        return FreshnessResult(RUNNING_FRESH, pids, started, newest_m, newest_p)
+        return FreshnessResult(
+            RUNNING_FRESH, pids, started, newest_m, newest_p, scope=scope
+        )
 
     touched = sorted(
-        path.relative_to(root).as_posix()
+        rel
         for path in Path(root).rglob("*.py")
         if "__pycache__" not in path.parts
-        and path.relative_to(root).as_posix() != SELF_RELPATH
+        and (rel := path.relative_to(root).as_posix()) != SELF_RELPATH
+        and (scope_set is None or rel in scope_set)
         and path.stat().st_mtime > started
     )
     _at, baseline = load_manifest(manifest, before=started)
@@ -390,12 +530,31 @@ def check(
         # older build (or by hand) *can* carry the key, and then an edit to the
         # guard would report the scheduler stale. Filtering the baseline is what
         # actually closes that.
-        baseline = {k: v for k, v in baseline.items() if k != SELF_RELPATH}
+        #
+        # The scope filter has to be applied on this side for the same reason.
+        # A manifest written before scoping existed carries keys the scoped
+        # scan no longer produces, and `changed_files` walks the BASELINE,
+        # counting a key absent from `current` as a deletion. Filtering only
+        # the scan would therefore turn every pre-existing manifest into a
+        # permanent STALE — a "fix" that makes the guard cry wolf on every
+        # install that already had one.
+        baseline = {
+            k: v
+            for k, v in baseline.items()
+            if k != SELF_RELPATH and (scope_set is None or k in scope_set)
+        }
         changed = changed_files(baseline, current)
         state = RUNNING_STALE if changed else RUNNING_FRESH
 
     return FreshnessResult(
-        state, pids, started, newest_m, newest_p, changed=changed, touched=touched
+        state,
+        pids,
+        started,
+        newest_m,
+        newest_p,
+        changed=changed,
+        touched=touched,
+        scope=scope,
     )
 
 
@@ -406,6 +565,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pattern", default=DEFAULT_PATTERN)
     ap.add_argument("--source-root", type=Path, default=None)
     ap.add_argument("--manifest", type=Path, default=None)
+    ap.add_argument(
+        "--entrypoint",
+        default=None,
+        help=f"module the process's import graph starts at (default {DEFAULT_ENTRYPOINT})",
+    )
     # Recording is ON by default and that is the whole design. The content
     # baseline can only come from a snapshot taken before the process started,
     # so a check that never records can only ever answer UNKNOWN — a converging
@@ -413,7 +577,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-record", dest="record", action="store_false", default=True)
     args, _unknown = ap.parse_known_args(argv)
 
-    result = check(args.pattern, args.source_root, args.manifest, record=args.record)
+    result = check(
+        args.pattern,
+        args.source_root,
+        args.manifest,
+        record=args.record,
+        entrypoint=args.entrypoint,
+    )
     stamp = datetime.now().isoformat(timespec="seconds")
     print(f"[{stamp}] scheduler-freshness: {result.summary()}")
     return result.exit_code
