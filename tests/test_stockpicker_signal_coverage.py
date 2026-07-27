@@ -215,3 +215,92 @@ def test_report_does_claim_measured_weights_are_in_use():
     text = accuracy._running_weights_section(_weights_stub(using_measured=True))
     assert "Used by the next pipeline run." in text
     assert "NOT yet used" not in text
+
+
+# --------------------------------------------------------------------------
+# A signal introduced part-way through the ledger crashed signal_stats
+# --------------------------------------------------------------------------
+#
+# `signal_stats` takes its column list from the WHOLE scored frame, then walks
+# the ledger date by date and re-derives a per-date frame with
+# `_signal_frame(g)`. `pd.json_normalize` only emits columns for keys present in
+# the rows it is given, so any date predating a signal's introduction has no
+# such column -- and `_signal_frame(g)[col]` raises KeyError.
+#
+# This is not hypothetical. Measured 2026-07-26 against the real ledger:
+#
+#     accuracy.signal_stats("r1")  -> KeyError: 'revision_proxy'
+#     accuracy.signal_stats("r5")  -> fine
+#
+# The only difference is coverage. `revision_proxy` (with `earnings_sue`,
+# `pead_drift` and the finviz signals) was restored by 1686637 and first appears
+# on 2026-07-20. `r1` is realized for 07-20, so the column enters the frame and
+# the 06-26 group blows up. `r5` for 07-20 is not realized yet, so that date is
+# filtered out and the column never appears at all.
+#
+# DEFAULT_HORIZON is "r5" -- the horizon `running_weights` and the nightly
+# scorecard use. So the default path breaks the moment 07-20's 5-day return
+# resolves, and `scripts/stockpicker-nightly.sh` runs that step under
+# `|| echo "  (accuracy non-fatal error)"`: the traceback would be swallowed,
+# `running_weights.json` would quietly stop updating, and the pipeline would
+# keep running on stale weights.
+#
+# Introducing a signal is a NORMAL event -- it is how every signal here began.
+
+def _ledger_rows(dates, signals_by_date, n_tickers=6, seed=0):
+    """Synthetic scored rows. `signals_by_date` maps date -> list of signal names."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for d in dates:
+        for i in range(n_tickers):
+            contrib = {s: float(rng.normal()) for s in signals_by_date[d]}
+            rows.append({
+                "as_of": f"{d}T00:00:00", "ticker": f"T{i}",
+                "composite": float(sum(contrib.values())),
+                "contrib": contrib,
+                "r1": float(rng.normal()), "r5": float(rng.normal()),
+            })
+    return rows
+
+
+def _patch_ledger(monkeypatch, rows):
+    from src.stockpicker import accuracy as _acc
+    monkeypatch.setattr(_acc.ledger, "_read_jsonl", lambda p: rows)
+
+
+ALL_DATES = ["2026-06-26", "2026-06-29", "2026-06-30", "2026-07-01"]
+
+
+def test_signal_stats_positive_control_when_every_date_has_every_signal(monkeypatch):
+    """Control: with uniform coverage the function returns real stats.
+
+    Without this, a fix that made signal_stats return {} on any irregular input
+    would pass the regression test below while measuring nothing at all.
+    """
+    from src.stockpicker import accuracy
+    rows = _ledger_rows(ALL_DATES, {d: ["old_sig", "new_sig"] for d in ALL_DATES})
+    _patch_ledger(monkeypatch, rows)
+
+    stats = accuracy.signal_stats("r5")
+
+    assert set(stats) == {"old_sig", "new_sig"}, f"expected both signals, got {set(stats)}"
+    assert stats["new_sig"]["n"] == len(ALL_DATES), "every date should count as a cross-section"
+
+
+def test_signal_stats_survives_a_signal_introduced_midway(monkeypatch):
+    """The regression: `new_sig` exists only on the last two dates."""
+    from src.stockpicker import accuracy
+    by_date = {d: ["old_sig"] for d in ALL_DATES}
+    for d in ALL_DATES[-2:]:
+        by_date[d] = ["old_sig", "new_sig"]
+    rows = _ledger_rows(ALL_DATES, by_date)
+    _patch_ledger(monkeypatch, rows)
+
+    stats = accuracy.signal_stats("r5")   # must not raise KeyError
+
+    assert "old_sig" in stats, "the fully-covered signal must still be measured"
+    # `n` counts INDEPENDENT CROSS-SECTIONS. The two dates that predate the
+    # signal contributed no observation and must not be fabricated into one.
+    assert stats["new_sig"]["n"] == 2, (
+        f"new_sig should count only the 2 dates it exists on, got {stats['new_sig']['n']}")
+    assert stats["old_sig"]["n"] == len(ALL_DATES)

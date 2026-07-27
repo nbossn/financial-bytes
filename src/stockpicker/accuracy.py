@@ -141,7 +141,17 @@ def signal_stats(horizon: str = DEFAULT_HORIZON) -> dict[str, dict]:
         # ICIR: IC per date, then mean/std (needs >=2 dates)
         ics_by_date = []
         for _, g in df.groupby("as_of"):
-            gx = _signal_frame(g)[col].astype(float)
+            # `col` comes from the WHOLE frame's columns, but json_normalize only
+            # emits keys present in the rows it is given — so a date that predates
+            # this signal's introduction has no such column. That is a real
+            # "no observation for this cross-section", not an error and not a
+            # zero: skip the date rather than fabricating one. Indexing blindly
+            # here raised KeyError on any signal added mid-ledger, which is how
+            # every signal in this module began.
+            gframe = _signal_frame(g)
+            if col not in gframe.columns:
+                continue
+            gx = gframe[col].astype(float)
             gy = g["realized"]
             if gx.nunique() > 2:
                 ics_by_date.append(gx.corr(gy, method="spearman"))
