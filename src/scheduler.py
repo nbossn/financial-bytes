@@ -280,12 +280,24 @@ def _send_premarket_discord(results: list) -> None:
 
 def _run_premarket_earnings_check() -> None:
     """Run at 7:10 AM ET on earnings days — fires premarket_check for pre-market reporters."""
-    from src.portfolio.earnings_calendar import get_todays_premarket_events
+    from src.portfolio.earnings_calendar import (
+        LIVE,
+        calendar_coverage,
+        get_todays_premarket_events,
+    )
     from src.portfolio.premarket_check import check_earnings_day
 
     events = get_todays_premarket_events()
     if not events:
-        logger.info("Premarket earnings check: no pre-market events today")
+        # "no events today" and "this calendar died in May" are different facts
+        # and used to share a sentence. State the coverage beside the outcome —
+        # deliberately no Discord/ntfy push: a daily alarm becomes background.
+        coverage = calendar_coverage()
+        line = f"Premarket earnings check: no pre-market events today ({coverage.describe()})"
+        if coverage.state == LIVE:
+            logger.info(line)
+        else:
+            logger.warning(line)
         return
 
     pairs = []

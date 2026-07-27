@@ -27,11 +27,17 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
+
+# Coverage states for the calendar as a whole (see calendar_coverage).
+LIVE = "live"            # has at least one entry dated today or later
+EXHAUSTED = "exhausted"  # every entry is in the past — cannot report an event
+EMPTY = "empty"          # no parseable dated entries at all
 
 
 def _calendar_path() -> Path:
@@ -123,6 +129,74 @@ def get_todays_premarket_events(reference_date: Optional[date] = None) -> list[d
     calendar = load_calendar()
     events = calendar.get(target.isoformat(), [])
     return [e for e in events if e.get("time") == "pre-market"]
+
+
+@dataclass(frozen=True)
+class CalendarCoverage:
+    """How much runway the calendar has left, as of a reference date.
+
+    This exists because `get_todays_premarket_events()` returning `[]` is
+    ambiguous: it means *either* "nothing reports pre-market today" (the normal,
+    uninteresting case) *or* "this calendar ran out weeks ago and can no longer
+    report anything" (a silent failure). Those two states produced the identical
+    log line for 43 consecutive runs before this was added.
+    """
+
+    state: str
+    last_date: Optional[date]
+    upcoming: int
+    days_stale: Optional[int]
+
+    def describe(self) -> str:
+        """A short clause naming the state, for appending to the daily line."""
+        if self.state == LIVE:
+            return f"calendar live through {self.last_date}, {self.upcoming} upcoming"
+        if self.state == EXHAUSTED:
+            return (
+                f"calendar EXHAUSTED — last entry {self.last_date}, "
+                f"{self.days_stale} days ago; no pre-market event can be detected "
+                f"until it is repopulated (financial-bytes add-earnings-event)"
+            )
+        return (
+            "calendar EXHAUSTED — no events have ever been added, so no "
+            "pre-market event can be detected (financial-bytes add-earnings-event)"
+        )
+
+
+def calendar_coverage(reference_date: Optional[date] = None) -> CalendarCoverage:
+    """Report whether the calendar can still detect anything.
+
+    Reporting only — this never changes which events a check returns.
+    """
+    target = reference_date or date.today()
+    calendar = load_calendar()
+
+    dated: list[tuple[date, list]] = []
+    for date_str, events in calendar.items():
+        try:
+            dated.append((date.fromisoformat(date_str), events or []))
+        except (ValueError, TypeError):
+            # A malformed key is not a coverage signal; skip it the same way
+            # upcoming_events() does.
+            continue
+
+    if not dated:
+        return CalendarCoverage(state=EMPTY, last_date=None, upcoming=0, days_stale=None)
+
+    last_date = max(d for d, _ in dated)
+    if last_date < target:
+        return CalendarCoverage(
+            state=EXHAUSTED,
+            last_date=last_date,
+            upcoming=0,
+            days_stale=(target - last_date).days,
+        )
+
+    # Count events, not date keys — several tickers can share one date.
+    upcoming = sum(len(events) for d, events in dated if d >= target)
+    return CalendarCoverage(
+        state=LIVE, last_date=last_date, upcoming=upcoming, days_stale=None
+    )
 
 
 def get_todays_afterclose_events(reference_date: Optional[date] = None) -> list[dict]:
