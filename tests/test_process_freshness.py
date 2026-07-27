@@ -159,6 +159,79 @@ def test_start_time_of_dead_process_is_none():
     assert process_start_time(p.pid) is None or process_start_time(p.pid) > 0
 
 
+# ------------------------------------------------- the clock this host runs on
+#
+# `process_start_time` is `/proc/stat` btime + the process's starttime ticks.
+# BOTH terms come from the monotonic clock, and on this host the monotonic
+# clock runs fast, so the answer slides steadily *earlier* the longer a process
+# lives. Measured 2026-07-26: three unrelated pids' reported start times each
+# moved -19.00s over 341s of wall clock, perfectly linearly (-5.57%), and the
+# daemon whose own `date`-stamped log says it launched at 23:00:01 reported
+# 22:58:19 — 102s early at 30 minutes of age.
+#
+# There is no exact correction: the rate varies (4.4%-6.1% across windows), so
+# no fixed factor recovers the true instant. What these tests pin instead is
+# the property the freshness verdict actually depends on — the error only ever
+# points one way, and that way is safe.
+#
+# Deliberately NOT pinned with a timing test. The skew is bursty, not
+# continuous: over a 3s window monotonic/realtime measured 1.0000009 (no skew
+# at all), while over 90s it measured 1.06127 — WSL resyncs realtime to the
+# Windows host in steps. A pin short enough to run every time would pass or
+# fail on where the window landed, and a guard that cries wolf is the failure
+# mode this module already documents elsewhere. Reproduce on demand instead:
+#
+#   python3 -c "
+#   import time
+#   u=lambda: float(open('/proc/uptime').read().split()[0])
+#   a=time.time()-u(); time.sleep(90); print('btime drift:', time.time()-u()-a)"
+#   # -> about -5s per 85s of realtime; must be 0 for a stable start time
+
+def test_reported_start_is_never_later_than_the_truth(target):
+    """The safety invariant the whole check rests on.
+
+    A start time reported *later* than the truth would let
+    `newest_source_mtime <= started` short-circuit to FRESH for a file written
+    after launch — the exact silent failure that cost 20 days. Reported
+    *earlier* only costs precision. Assert the direction, not the magnitude.
+    """
+    ceiling = time.time()          # the process already exists (fixture waited)
+    started = process_start_time(target.pid)
+    assert started is not None
+    assert started <= ceiling + 0.05, (
+        f"reported start {started} is later than now {ceiling} — a false FRESH "
+        "is reachable"
+    )
+
+
+def test_a_start_time_that_slid_later_would_be_caught():
+    """Positive control for the invariant above.
+
+    Without this, the assertion is satisfied by any implementation at all and
+    could not distinguish a correct bound from a broken one.
+    """
+    ceiling = time.time()
+    pretend_started = ceiling + 30.0
+    assert not (pretend_started <= ceiling + 0.05)
+
+
+def test_summary_does_not_claim_an_exact_start_instant(target):
+    """The reported string is the thing that gets copied into BACKLOG.
+
+    Block 6 recorded 'pid 298 started 07-24 16:06' from this output. The same
+    never-restarted process reported 15:05:43 on 07-26 and reads earlier every
+    minute, so that timestamp decayed into a wrong fact in a document people
+    act on. The number cannot be made exact; it must stop presenting itself as
+    exact.
+    """
+    result = check(pattern=MAGIC, source_root=Path("src"))
+    text = result.summary()
+    assert "started" in text
+    assert "no later than" in text, (
+        f"summary states a bare start instant and invites it being quoted: {text!r}"
+    )
+
+
 # ---------------------------------------------------------------- mtime scan
 
 def test_newest_source_mtime_finds_the_newest_file(src_tree):

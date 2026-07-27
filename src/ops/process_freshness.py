@@ -126,13 +126,44 @@ def _boot_time() -> float | None:
 
 
 def process_start_time(pid: int) -> float | None:
-    """Epoch seconds at which `pid` started, or None if it's gone.
+    """A LOWER BOUND on the epoch seconds at which `pid` started — never later
+    than the truth, and on this host substantially earlier. None if it's gone.
 
-    Derived as /proc/stat btime + the process's starttime ticks. btime is the
-    kernel's (now - uptime) and drifts a second or two under NTP — successive
-    calls for one process were seen 3s apart on this host. That is noise
-    against the hours-to-days staleness this check reports; do not read this
-    as second-accurate.
+    Derived as /proc/stat btime + the process's starttime ticks. Both terms
+    come from the monotonic clock, which on this host runs ~5-6% fast against
+    a realtime clock that WSL keeps resynced to the Windows host. So btime
+    (= realtime now - uptime) slides steadily *earlier*, and with it every
+    start time derived from it. The error is proportional to the process's age
+    and unbounded: at 20 days — precisely the blackout this module was built
+    for — it is over half a day.
+
+    Measured 2026-07-26, not inferred:
+
+      * three unrelated pids' reported start times each moved -19.00s over
+        341s of wall clock, linearly and identically (-5.57%);
+      * the overnight daemon, whose own `date`-stamped log records its launch
+        at 23:00:01 and which cron fires on the minute, reported 22:58:19 —
+        102s early at 30 minutes of age;
+      * over a 90s sleep, CLOCK_MONOTONIC advanced 90.00s while CLOCK_REALTIME
+        advanced 84.80s, and btime moved -5.00s.
+
+    An earlier version of this docstring called that "a second or two under
+    NTP ... noise against the hours-to-days staleness this check reports". It
+    is not noise; it grows without bound. It was spotted then (successive
+    calls 3s apart) and mis-attributed.
+
+    Not corrected, because it cannot be: the rate varies with where the resync
+    steps land (4.4%-6.1% across measured windows), so no fixed factor recovers
+    the true instant, and /proc exposes no realtime start. `/proc/<pid>`'s
+    inode mtime is NOT an alternative — it is stamped at first lookup, not at
+    creation (verified: stat a process 6s after spawning it and the inode reads
+    exactly 6s late).
+
+    What survives is the direction, which is the half the verdict rests on. An
+    under-estimate can only make `newest_source_mtime <= started` fail, sending
+    the check on to the content comparison; it can never short-circuit to
+    FRESH. Over-estimating would reintroduce the silent failure that cost 20
+    days. Callers may rely on the bound; they must not quote the instant.
     """
     try:
         stat = (_PROC / str(pid) / "stat").read_text()
@@ -265,7 +296,15 @@ class FreshnessResult:
     def summary(self) -> str:
         if self.state == NOT_RUNNING:
             return "DOWN — no scheduler process found. Restart it."
-        started = datetime.fromtimestamp(self.started_at).isoformat(timespec="seconds")
+        # "no later than", not a bare instant: this string is what gets quoted.
+        # Block 6 copied "pid 298 started 07-24 16:06" out of here into BACKLOG;
+        # the same never-restarted process read 15:05:43 two days later and
+        # reads earlier every minute. See process_start_time — the value is a
+        # lower bound, so the wording has to say so or it decays into a wrong
+        # fact in a document someone acts on.
+        started = "no later than " + datetime.fromtimestamp(
+            self.started_at
+        ).isoformat(timespec="seconds")
         if self.state == RUNNING_FRESH:
             return (
                 f"OK — pid {self.pids[0]} started {started}; no imported source "
