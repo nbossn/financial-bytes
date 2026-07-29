@@ -37,6 +37,7 @@ warnings.filterwarnings("ignore")
 from bs4 import BeautifulSoup
 
 from src.scrapers.finviz_scraper import _get_page_html, _parse_snapshot, FINVIZ_QUOTE_URL
+from src.stockpicker import insider_news
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "stockpicker"
 SNAP_DIR = DATA_DIR / "finviz_snapshots"
@@ -63,8 +64,13 @@ def _throttle() -> None:
     _last_fetch_t[0] = time.monotonic()
 
 
-def fetch(ticker: str, retries: int = FETCH_MAX_RETRIES) -> dict | None:
-    """Return the full finviz snapshot dict for a ticker (None on failure).
+def fetch_page(ticker: str, retries: int = FETCH_MAX_RETRIES):
+    """Return ``(snapshot, soup)`` for a ticker — ONE request, parsed once.
+
+    The quote page also carries the insider-trading and news tables that
+    `insider_news` needs. Returning the soup lets those be read from the page
+    we already paid for, instead of fetching it a second time and doubling the
+    rate-limit exposure that FETCH_MIN_DELAY exists to manage.
 
     Throttled + retried with exponential backoff so a large batch doesn't get
     rate-limited into partial coverage.
@@ -73,12 +79,18 @@ def fetch(ticker: str, retries: int = FETCH_MAX_RETRIES) -> dict | None:
         _throttle()
         html = _get_page_html(FINVIZ_QUOTE_URL.format(ticker=ticker))
         if html:
-            snap = _parse_snapshot(BeautifulSoup(html, "lxml"))
+            soup = BeautifulSoup(html, "lxml")
+            snap = _parse_snapshot(soup)
             if snap:
-                return snap
+                return snap, soup
         if attempt < retries:
             time.sleep(FETCH_MIN_DELAY * (2 ** attempt))  # 1.2s, 2.4s backoff
-    return None
+    return None, None
+
+
+def fetch(ticker: str, retries: int = FETCH_MAX_RETRIES) -> dict | None:
+    """Return the full finviz snapshot dict for a ticker (None on failure)."""
+    return fetch_page(ticker, retries=retries)[0]
 
 
 def enrich_batch(tickers: list[str], progress_every: int = 15) -> dict[str, dict]:
@@ -239,11 +251,17 @@ def snapshot_is_complete(snap: dict | None) -> bool:
 
 def enrich_ticker(ticker: str) -> dict:
     """Full finviz enrichment for one ticker: snapshot + squeeze + signals."""
-    snap = fetch(ticker)
+    snap, soup = fetch_page(ticker)
     if not snap:
         return {"ticker": ticker, "ok": False, "complete": False}
+    # insider_cluster + sentiment, read off the SAME page — no extra request.
+    # Keys are always present; a None value means "no data", which becomes NaN
+    # downstream rather than a fabricated 0.0.
+    extra = insider_news.signals_from_html(insider_html=soup, news_html=soup)
     return {
         "ticker": ticker, "ok": True,
+        "insider_cluster": extra["insider_cluster"],
+        "sentiment": extra["sentiment"],
         # `ok` = the fetch worked. `complete` = the weighted fields are present.
         # Report BOTH; a high ok / low complete split is the signature of a
         # parser drift after a site layout change.

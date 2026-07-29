@@ -34,6 +34,7 @@ python-dateutil = "^2.9"
 pytz = "^2024.1"
 defusedxml = "^0.7.1"
 alpaca-py = ">=0.8"
+vaderSentiment = "^3.3"   # headline sentiment for the `sentiment` signal
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2"

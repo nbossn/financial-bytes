@@ -205,6 +205,14 @@ def main(write_report: bool = True) -> dict:
     z_short = _z({t: (x if x is not None else np.nan) for t, x in fsig("fv_short_pressure").items()})
     fv_target = fsig("fv_target_upside")
 
+    # insider_cluster + sentiment — read off the finviz page already fetched
+    # above. Both were in the weight vector and in no contrib line, so together
+    # they moved 10.9% of the nominal weight by exactly 0.0 for 706 rows.
+    # `.get(...)` (not `[...]`) because a failed fetch has neither key.
+    esig = lambda key: {t: (fv[t].get(key) if fv[t].get("ok") else None) for t in good}
+    z_insider = _z({t: (x if x is not None else np.nan) for t, x in esig("insider_cluster").items()})
+    z_sent = _z({t: (x if x is not None else np.nan) for t, x in esig("sentiment").items()})
+
     # --- composite ---
     records = []
     for t in good:
@@ -228,6 +236,10 @@ def main(write_report: bool = True) -> dict:
 
         # options positioning (put/call); IV level is risk-only, not directional
         contrib["opt_pc_sentiment"] = PRIOR_W["opt_pc_sentiment"] * z_pc[t]
+
+        # insider conviction + news sentiment (Lakonishok-Lee; VADER+finance)
+        contrib["insider_cluster"] = PRIOR_W["insider_cluster"] * z_insider[t]
+        contrib["sentiment"]       = PRIOR_W["sentiment"]       * z_sent[t]
 
         # Every term above is now recorded in `contrib`, so accuracy.signal_stats
         # can measure an IC for each one. Previously short_pressure, earnings_sue,

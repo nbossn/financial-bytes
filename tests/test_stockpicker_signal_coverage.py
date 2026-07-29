@@ -167,13 +167,15 @@ def test_one_year_window_would_flatline_momentum():
 # Weighted-but-never-computed signals
 # --------------------------------------------------------------------------
 
-def test_weighted_signals_without_a_contribution_are_exactly_the_known_two():
-    """`insider_cluster` and `sentiment` carry weight and are never computed.
+def test_every_weighted_signal_has_a_contribution_line():
+    """No signal may carry weight without contributing to the composite.
 
-    They hold 25.3% of the live `universe_scores` weight vector and appear in
-    zero of the 706 ledger rows — there is no ``contrib[...]`` line for either
-    one anywhere in run.py. That is a build, not a bug fix, so it is Nick's
-    call; this test pins the set so a *third* one cannot appear silently.
+    `insider_cluster` and `sentiment` were the last two holdouts: together
+    10.9% of the effective (PRIOR_W) weight vector, present in zero of the 706
+    scored ledger rows because no ``contrib[...]`` line existed for either.
+    Both are now computed in `insider_news` from the finviz page run.py already
+    fetches. This test is the standing guard — it fails if a *new* weighted
+    signal is ever added without being wired in.
     """
     emitted = run.emitted_signal_names()
 
@@ -182,7 +184,17 @@ def test_weighted_signals_without_a_contribution_are_exactly_the_known_two():
     assert "short_squeeze" in emitted and "momentum_12_1" in emitted
 
     weighted = set(engine.PRICE_SIGNALS) | set(run.PRIOR_W)
-    assert weighted - emitted == {"insider_cluster", "sentiment"}
+    assert weighted - emitted == set(), (
+        f"weighted but never computed: {sorted(weighted - emitted)}")
+
+
+def test_the_two_revived_signals_are_specifically_present():
+    """Named explicitly so the guard above cannot be satisfied by deleting a
+    weight instead of computing the signal."""
+    emitted = run.emitted_signal_names()
+    assert "insider_cluster" in emitted
+    assert "sentiment" in emitted
+    assert "insider_cluster" in run.PRIOR_W and "sentiment" in run.PRIOR_W
 
 
 # --------------------------------------------------------------------------
