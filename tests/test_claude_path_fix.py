@@ -121,14 +121,19 @@ class TestAnalystAgentClaudePath:
             "analyst_agent._call_claude_async invokes claude by bare name")
 
     def test_analyst_claude_bin_module_attribute(self):
-        """If _CLAUDE_BIN exists at module level, it must be an absolute path."""
+        """_CLAUDE_BIN must exist at module level AND be an absolute path.
+
+        Previously both assertions sat under `if claude_bin:`, so deleting the
+        attribute outright — the exact regression that reintroduces the bug —
+        made this test pass.
+        """
         import src.agents.analyst_agent as aa
         claude_bin = getattr(aa, "_CLAUDE_BIN", None)
-        if claude_bin:
-            assert claude_bin != "claude", (
-                f"_CLAUDE_BIN must be a full path, got: {claude_bin!r}"
-            )
-            assert os.path.isabs(claude_bin), f"_CLAUDE_BIN must be absolute: {claude_bin!r}"
+        assert claude_bin, "analyst_agent._CLAUDE_BIN is missing entirely"
+        assert claude_bin != "claude", (
+            f"_CLAUDE_BIN must be a full path, got: {claude_bin!r}")
+        assert os.path.isabs(claude_bin), (
+            f"_CLAUDE_BIN must be absolute, got: {claude_bin!r}")
 
 
 class TestDaemonPathResolution:
