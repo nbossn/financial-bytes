@@ -32,13 +32,24 @@ class TestDirectorAgentClaudePath:
         )
 
     def test_claude_bin_fallback_when_which_returns_none(self):
-        """When shutil.which returns None, should fall back to known path."""
-        with patch("shutil.which", return_value=None):
-            import importlib
-            import src.agents.director_agent as da
-            importlib.reload(da)
-            # _call_claude should not raise on import; the fallback path is set
-            assert da is not None
+        """When shutil.which returns None the resolved binary must still be an
+        absolute path.
+
+        Previously this asserted `da is not None` — a tautology that passes
+        whether or not a fallback exists. It now executes the call with
+        which() forced to None and reads the argv actually built.
+        """
+        import src.agents.director_agent as da
+        with patch("shutil.which", return_value=None), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
+            try:
+                da._call_claude("test prompt")
+            except Exception:
+                pass
+            assert mock_run.called, "the claude call never executed — test is vacuous"
+            cmd = mock_run.call_args[0][0]
+            assert cmd[0].startswith("/"), f"no absolute fallback: {cmd[0]!r}"
 
     def test_director_call_uses_list_not_bare_string(self):
         """subprocess.run must receive a list — bare string allows shell injection."""
@@ -57,7 +68,8 @@ class TestDirectorAgentClaudePath:
                 da._call_claude("test prompt")
             except Exception:
                 pass
-            if mock_run.called:
+            assert mock_run.called, "the claude call never executed — test is vacuous"
+            if True:
                 call_args = mock_run.call_args
                 cmd = call_args[0][0] if call_args[0] else call_args[1].get("args", [])
                 assert isinstance(cmd, list), "cmd must be a list, not a string (shell injection risk)"
@@ -72,43 +84,41 @@ class TestDirectorAgentClaudePath:
                 da._call_claude("test prompt")
             except Exception:
                 pass
-            if mock_run.called:
+            assert mock_run.called, "the claude call never executed — test is vacuous"
+            if True:
                 kwargs = mock_run.call_args[1]
                 assert not kwargs.get("shell", False), "shell=True is a security risk"
 
 
 class TestAnalystAgentClaudePath:
-    """analyst_agent path fix — NOTE: branch only fixed director_agent.
-    analyst_agent still uses bare 'claude'. These tests document the gap."""
+    """analyst_agent path resolution.
 
-    def test_analyst_sync_call_claude_path_KNOWN_INCOMPLETE(self):
-        """KNOWN BUG: analyst_agent._call_claude still uses bare 'claude'.
-        This test documents the incomplete fix — analyst_agent must also be updated
-        before merging. The fix in director_agent alone is insufficient because
-        analyst_agent runs parallel Haiku calls for all tickers and faces the
-        same daemon PATH issue.
-        """
+    HISTORY: these two tests were written while analyst_agent still used bare
+    'claude', and they called pytest.xfail INSIDE `if uses_bare_claude:`. Once
+    the code was fixed the condition went false and they passed having asserted
+    nothing — and they would have stayed silent if it regressed, because a
+    regression makes them xfail, not fail. They now assert the fix directly.
+
+    The broader sweep (every call site, discovered rather than listed) lives in
+    test_claude_binary_sweep.py — written after this file's two-site list was
+    found to have missed quant_agent and managing_director_agent entirely.
+    """
+
+    def test_analyst_sync_call_claude_resolves_a_path(self):
         import src.agents.analyst_agent as aa
         import inspect
         source = inspect.getsource(aa._call_claude)
-        uses_bare_claude = 'cmd = ["claude"' in source or "cmd = ['claude'" in source
-        if uses_bare_claude:
-            pytest.xfail(
-                "INCOMPLETE FIX: analyst_agent._call_claude still uses bare 'claude'. "
-                "Must be fixed before merging: apply same shutil.which() fix as director_agent."
-            )
+        assert 'cmd = ["claude"' not in source and "cmd = ['claude'" not in source, (
+            "analyst_agent._call_claude invokes claude by bare name — fails under "
+            "cron/daemon PATH")
+        assert "_CLAUDE_BIN" in source or "shutil.which" in source
 
-    def test_analyst_async_call_claude_path_KNOWN_INCOMPLETE(self):
-        """KNOWN BUG: analyst_agent._call_claude_async also uses bare 'claude'."""
+    def test_analyst_async_call_claude_resolves_a_path(self):
         import src.agents.analyst_agent as aa
         import inspect
         source = inspect.getsource(aa._call_claude_async)
-        uses_bare_claude = '"claude"' in source and "shutil.which" not in source
-        if uses_bare_claude:
-            pytest.xfail(
-                "INCOMPLETE FIX: analyst_agent._call_claude_async still uses bare 'claude'. "
-                "Fix required: claude_bin = shutil.which('claude') or '/home/nboss/.local/bin/claude'"
-            )
+        assert "_CLAUDE_BIN" in source or "shutil.which" in source, (
+            "analyst_agent._call_claude_async invokes claude by bare name")
 
     def test_analyst_claude_bin_module_attribute(self):
         """If _CLAUDE_BIN exists at module level, it must be an absolute path."""

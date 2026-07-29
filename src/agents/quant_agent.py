@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -164,7 +165,10 @@ def _build_prompt(
 
 @retry(wait=wait_exponential(multiplier=2, min=5, max=60), stop=stop_after_attempt(4), reraise=True)
 def _call_claude(user_prompt: str) -> str:
-    cmd = ["claude", "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
+    # Resolve full path so cron/daemon processes that do not inherit
+    # ~/.local/bin in PATH can still find claude.
+    claude_bin = shutil.which("claude") or "/home/nboss/.local/bin/claude"
+    cmd = [claude_bin, "-p", user_prompt, "--model", MODEL, "--system-prompt", SYSTEM_PROMPT]
     if settings.claude_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
