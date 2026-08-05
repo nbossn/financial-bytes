@@ -265,3 +265,33 @@ def test_icir_needs_only_two_cross_sections_to_exist():
     icir = float(np.mean([a, b]) / np.std([a, b]))
     assert icir > 20
     assert float(np.clip(0.5 + 0.5 * icir, 0.25, 2.0)) == 2.0
+
+
+# ───────────── sibling: the second place priors mix with weights ─────────────
+
+def test_report_enrich_falls_back_to_the_normalised_prior():
+    """`confidence.py` states normalised priors MUST be used wherever a prior
+    is mixed with measured weights in one composite. run.py's three event-signal
+    lines obey it; report.py's identical three used the RAW prior, 1.82x
+    smaller. LATENT -- both live weight sources carry all three keys, so the
+    fallback is unreachable and correcting it moves no pick today.
+
+    ⚠️ This test GREPS SOURCE; it executes nothing. It cannot tell you the
+    fallback behaves correctly, only that the constant named on that line is
+    the right one. A behavioural test would have to drive `report.main()`,
+    which fetches yfinance end-to-end. Stated rather than implied, because a
+    green source-grep reads exactly like a green behavioural test.
+    """
+    from pathlib import Path
+    from src.stockpicker import report
+    src = Path(report.__file__).read_text(encoding="utf-8")
+    for s in ("revision_proxy", "earnings_sue", "pead_drift"):
+        assert f'weights.get("{s}", PRIOR_W["{s}"])' in src
+        assert f'weights.get("{s}", IC_PRIORS["{s}"])' not in src
+
+
+def test_the_two_prior_scales_really_do_differ():
+    """Control: if PRIOR_W and IC_PRIORS were the same numbers, the test above
+    would be asserting a distinction without a difference."""
+    for s in ("revision_proxy", "earnings_sue", "pead_drift"):
+        assert PRIOR_W[s] / IC_PRIORS[s] == pytest.approx(1.82, rel=0.02)

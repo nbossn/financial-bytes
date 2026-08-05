@@ -22,7 +22,7 @@ import numpy as np
 import yfinance as yf
 
 from src.stockpicker.risk import classify_risk
-from src.stockpicker.confidence import IC_PRIORS
+from src.stockpicker.confidence import IC_PRIORS, PRIOR_W
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "stockpicker"
 
@@ -130,9 +130,16 @@ def main():
     enriched_scores = {}
     for tk in top:
         base = by_ticker[tk]["composite"]
-        add = (weights.get("revision_proxy", IC_PRIORS["revision_proxy"]) * z_rev[tk]
-               + weights.get("earnings_sue", IC_PRIORS["earnings_sue"]) * z_sue[tk]
-               + weights.get("pead_drift", IC_PRIORS["pead_drift"]) * z_pead[tk])
+        # PRIOR_W, not IC_PRIORS: confidence.py states normalised priors MUST be
+        # used wherever a prior is mixed with measured weights in one composite.
+        # The raw prior is 1.82x smaller here, so falling back to it silently
+        # under-weights the whole event block. run.py's identical three lines
+        # already use PRIOR_W; this copy did not. LATENT today -- both weight
+        # sources carry all three keys, so the fallback is unreachable and this
+        # change moves no pick.
+        add = (weights.get("revision_proxy", PRIOR_W["revision_proxy"]) * z_rev[tk]
+               + weights.get("earnings_sue", PRIOR_W["earnings_sue"]) * z_sue[tk]
+               + weights.get("pead_drift", PRIOR_W["pead_drift"]) * z_pead[tk])
         enriched_scores[tk] = {
             "composite_full": base + add,
             "composite_price": base,
