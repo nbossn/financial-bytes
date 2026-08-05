@@ -730,6 +730,18 @@ def run_pipeline(
     if market_prices:
         snapshot = PortfolioSnapshot(holdings=holdings, prices=market_prices, as_of=today, lot_overrides=lot_overrides)
 
+    # A holding with no market price is valued at cost basis, which reports
+    # unrealized P&L of exactly $0.00 — indistinguishable from a flat position.
+    # BRKB shipped that way in ten consecutive newsletters. Say so out loud.
+    if snapshot.missing_prices:
+        logger.warning(
+            f"[price] {len(snapshot.missing_prices)}/{len(holdings)} holding(s) have no market "
+            f"price and will be valued at cost basis (zero P&L): "
+            f"{', '.join(snapshot.missing_prices)}"
+        )
+    else:
+        logger.info(f"[price] All {len(holdings)} holding(s) priced at market")
+
     # ── Phase 4: Analyst agents (concurrent via asyncio, DB-first) ─
     # analyze_ticker_async checks the summaries table before calling Claude.
     # On a resumed run where all 345 summaries are already in DB, this phase

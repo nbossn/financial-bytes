@@ -10,6 +10,7 @@ from decimal import Decimal
 from loguru import logger
 
 from src.api.models import QuoteSnapshot
+from src.api.symbols import resolve_symbol, to_yahoo_symbol
 
 
 def get_quote_yfinance(ticker: str) -> QuoteSnapshot | None:
@@ -22,7 +23,11 @@ def get_quote_yfinance(ticker: str) -> QuoteSnapshot | None:
     try:
         import yfinance as yf
 
-        t = yf.Ticker(ticker)
+        symbol, rewritten = resolve_symbol(ticker)
+        if rewritten:
+            logger.debug(f"[yfinance] {ticker} → {symbol} (broker dual-class form)")
+
+        t = yf.Ticker(symbol)
         info = t.fast_info
 
         price = info.last_price
@@ -66,8 +71,12 @@ def get_quotes_batch_yfinance(tickers: list[str]) -> dict[str, QuoteSnapshot]:
     try:
         import yfinance as yf
 
+        # Download by Yahoo symbol, but key every result by the caller's
+        # ticker — downstream consumers look prices up by `holding.ticker`.
+        symbol_of = {t: to_yahoo_symbol(t) for t in tickers}
+
         data = yf.download(
-            tickers=" ".join(tickers),
+            tickers=" ".join(symbol_of[t] for t in tickers),
             period="2d",
             auto_adjust=True,
             progress=False,
@@ -79,14 +88,20 @@ def get_quotes_batch_yfinance(tickers: list[str]) -> dict[str, QuoteSnapshot]:
             return results
 
         close = data["Close"]
-        if len(tickers) == 1:
-            # Single ticker returns a Series, not a DataFrame column
-            close = close.to_frame(name=tickers[0])
+        if not hasattr(close, "columns"):
+            # Older yfinance returned a Series for a single ticker. Current
+            # versions return a one-column DataFrame already, and the
+            # unconditional `.to_frame()` this replaces raised AttributeError
+            # for *every* single-ticker call — MSFT included — which the
+            # blanket `except` turned into an empty dict. Branch on the shape
+            # rather than on len(tickers).
+            close = close.to_frame(name=symbol_of[tickers[0]])
 
         for ticker in tickers:
-            if ticker not in close.columns:
+            symbol = symbol_of[ticker]
+            if symbol not in close.columns:
                 continue
-            prices = close[ticker].dropna()
+            prices = close[symbol].dropna()
             if len(prices) < 1:
                 continue
 

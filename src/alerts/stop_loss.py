@@ -24,6 +24,8 @@ import requests
 import yfinance as yf
 from loguru import logger
 
+from src.api.symbols import resolve_symbol
+
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
@@ -84,13 +86,29 @@ def _load_stop_loss_positions(csv_path: Path) -> list[dict]:
 
 
 def _fetch_prices(tickers: list[str]) -> dict[str, Decimal]:
-    """Fetch latest close prices via yfinance."""
+    """Fetch latest close prices via yfinance.
+
+    Keys are the caller's tickers (the broker form), never the Yahoo form —
+    every downstream consumer looks a price up by `holding.ticker`, so keying
+    the result by `BRK-B` would leave `BRKB` unpriced through a different door.
+    """
     prices: dict[str, Decimal] = {}
     for ticker in tickers:
+        symbol, rewritten = resolve_symbol(ticker)
         try:
-            hist = yf.Ticker(ticker).history(period="2d")
+            hist = yf.Ticker(symbol).history(period="2d")
             if not hist.empty:
                 prices[ticker] = Decimal(str(round(hist["Close"].iloc[-1], 4)))
+            else:
+                # An empty frame is how Yahoo reports an unknown symbol — it is
+                # not an exception, so this branch used to log nothing at all
+                # and the ticker simply failed to appear in the dict.
+                logger.warning(
+                    f"No price data for {ticker}"
+                    + (f" (resolved to {symbol})" if rewritten else "")
+                    + " — yfinance returned an empty frame; this position will "
+                    "fall back to cost basis and show zero P&L"
+                )
         except Exception as e:
             logger.warning(f"Could not fetch price for {ticker}: {e}")
     return prices

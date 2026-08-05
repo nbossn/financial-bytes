@@ -41,6 +41,25 @@ class PortfolioSnapshot:
         return sum(h.total_cost for h in self.holdings)
 
     @property
+    def missing_prices(self) -> list[str]:
+        """Tickers held but not priced, in holding order.
+
+        `total_value` falls back to `cost_basis` for these — the one value that
+        makes unrealized P&L exactly zero, so an unpriced position renders
+        identically to a genuinely flat one. That fallback is deliberate (there
+        is no better estimate) but it must not be *silent*: a caller that does
+        not consult this list is reporting a fabricated zero as a measurement.
+
+        `BRKB` sat here for 41 days. See `src.api.symbols`.
+        """
+        return [h.ticker for h in self.holdings if h.ticker not in self.prices]
+
+    @property
+    def has_complete_prices(self) -> bool:
+        """False when any holding was priced at cost basis rather than market."""
+        return not self.missing_prices
+
+    @property
     def total_value(self) -> Decimal:
         return sum(h.current_value(self.prices.get(h.ticker, h.cost_basis)) for h in self.holdings)
 
