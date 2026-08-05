@@ -222,10 +222,17 @@ def test_report_does_not_claim_prior_dominated_weights_are_in_use():
 
 
 def test_report_does_claim_measured_weights_are_in_use():
-    """Zero-control: the honest branch must still be reachable."""
+    """Zero-control: the honest branch must still be reachable.
+
+    This asserted the literal "Used by the next pipeline run." — which was the
+    overclaim itself: true of the file, false of the 7 rows the composite pins
+    to PRIOR_W. The control property (the measured branch is reachable and is
+    distinguishable from the prior-dominated one) is what mattered and is kept;
+    see tests/test_weight_application.py for the per-signal assertions.
+    """
     from src.stockpicker import accuracy
     text = accuracy._running_weights_section(_weights_stub(using_measured=True))
-    assert "Used by the next pipeline run." in text
+    assert "by the next pipeline run" in text
     assert "NOT yet used" not in text
 
 

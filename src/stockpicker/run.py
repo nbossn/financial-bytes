@@ -75,6 +75,70 @@ def emitted_signal_names() -> set[str]:
     return set(PRICE_SIGNALS) | set(re.findall(r'contrib\[["\']([a-z0-9_]+)["\']\]', src))
 
 
+def measured_weight_consumers() -> set[str]:
+    """Signals whose contribution actually reads the measured weight vector.
+
+    `emitted_signal_names` above answers "does this signal move the composite
+    at all" — the question behind the insider_cluster/sentiment fix. This
+    answers the next one, which nothing asked: *whose* weight moves it. The
+    PRICE_SIGNALS loop and three event signals call ``weights.get(...)``; every
+    other contribution is hardcoded to ``PRIOR_W[...]`` and cannot learn.
+
+    Derived from this file's source rather than listed, for the same reason
+    `emitted_signal_names` is: a hand-kept list drifts from the composite the
+    first time someone edits it, and the drift is silent.
+    """
+    src = Path(__file__).read_text(encoding="utf-8")
+    return set(PRICE_SIGNALS) | set(
+        re.findall(r'contrib\[["\']([a-z0-9_]+)["\']\]\s*=\s*weights\.get', src))
+
+
+def prior_pinned_signals() -> set[str]:
+    """Signals frozen at their literature prior, ignoring the measured vector."""
+    src = Path(__file__).read_text(encoding="utf-8")
+    return set(
+        re.findall(r'contrib\[["\']([a-z0-9_]+)["\']\]\s*=\s*PRIOR_W\[', src))
+
+
+def applied_weights(published: dict) -> dict[str, float]:
+    """The weight vector the composite really uses, given a published one.
+
+    Reproduces `main`'s two different fallbacks deliberately — price signals
+    default to 0.0, event signals to PRIOR_W, six lines apart — because an
+    audit that assumed one convention would report divergences that do not
+    exist for the other.
+    """
+    pinned = prior_pinned_signals()
+    out: dict[str, float] = {}
+    for name in IC_PRIORS:
+        if name in pinned:
+            out[name] = PRIOR_W[name]
+        elif name in PRICE_SIGNALS:
+            out[name] = float(published.get(name, 0.0))
+        else:
+            out[name] = float(published.get(name, PRIOR_W[name]))
+    return out
+
+
+def weight_divergences(published: dict, tol: float = 1e-9) -> list[dict]:
+    """Signals whose published weight is not the weight the composite applies.
+
+    Non-empty means `running_weights.json` and SCORECARD.md are reporting a
+    number that never reaches a pick.
+    """
+    applied = applied_weights(published)
+    out = []
+    for name in sorted(IC_PRIORS):
+        if name not in published:
+            continue
+        pub = float(published[name])
+        if abs(pub - applied[name]) > tol:
+            out.append({"signal": name, "published": pub,
+                        "applied": applied[name],
+                        "pinned": name in prior_pinned_signals()})
+    return out
+
+
 def load_weights() -> tuple[dict, str]:
     """Load confidence weights. Preference order:
     1. running_weights.json — ledger-derived, self-updating from realized outcomes

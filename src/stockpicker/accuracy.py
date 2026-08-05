@@ -309,13 +309,25 @@ def _running_weights_section(rw: dict) -> str:
     pipeline run" unconditionally is the kind of success statement that makes a
     dormant loop look like a live one.
     """
+    from src.stockpicker.run import measured_weight_consumers, prior_pinned_signals
+    pinned = sorted(prior_pinned_signals())
+    n_total = len(confidence.IC_PRIORS)
+    n_used = len(measured_weight_consumers())
+
     state = "MEASURED" if rw["using_measured"] else "still prior-dominated"
     if rw["using_measured"]:
-        used = "Used by the next pipeline run."
+        # "Used by the next pipeline run." was true of the file and false of
+        # 7 of the rows above it. The old check asked whether this file is read
+        # at all; it never asked which rows in it are. Both halves now.
+        used = (f"Used for {n_used} of {n_total} signals by the next pipeline "
+                f"run.")
     else:
         used = (f"NOT yet used — the pipeline needs {MIN_OBS_FOR_WEIGHTS} obs per "
                 f"signal and has {rw['max_obs_per_signal']}, so it falls back to "
                 f"the universe_scores backtest cache.")
+    used += (f" **{len(pinned)} of {n_total} signals are pinned to their "
+             f"literature prior** and ignore the weight column above whatever "
+             f"the state: {', '.join(pinned)}.")
     return (f"\n## Running weights ({state})\n\n"
             f"{_weights_table(rw)}\n"
             f"\n*Source: {WEIGHTS_PATH}. {used} Weights = "
@@ -323,12 +335,19 @@ def _running_weights_section(rw: dict) -> str:
 
 
 def _weights_table(rw: dict) -> str:
+    from src.stockpicker.run import prior_pinned_signals
+    pinned = prior_pinned_signals()
     rows = sorted(rw["rows"], key=lambda r: r["weight"], reverse=True)
-    out = ["| Signal | weight | IC* (shrunk) | λ→prior | n |",
-           "|--------|--------|--------------|---------|---|"]
+    out = ["| Signal | weight | IC* (shrunk) | λ→prior | n | applied? |",
+           "|--------|--------|--------------|---------|---|----------|"]
     for r in rows:
+        # The weight column is what this file publishes. For a pinned signal it
+        # is not what the composite uses, so the row has to say so on the row --
+        # a footnote under a 15-row table is read as applying to the table.
+        mark = ("**no — pinned to prior**" if r["signal"] in pinned
+                else "yes — measured")
         out.append(f"| {r['signal']} | {r['weight']*100:.1f}% | {r['ic_shrunk']:+.4f} "
-                   f"| {r['lambda_prior']:.2f} | {r['n']} |")
+                   f"| {r['lambda_prior']:.2f} | {r['n']} | {mark} |")
     return "\n".join(out)
 
 
