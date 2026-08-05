@@ -120,6 +120,29 @@ def get_due_reminders(reference_date: Optional[date] = None) -> list[dict]:
     return due
 
 
+def get_expired_unsent_reminders(reference_date: Optional[date] = None) -> list[dict]:
+    """Return reminders whose deadline has passed while still unsent.
+
+    `get_due_reminders` is time-gated: once the deadline is behind us it stops
+    returning the reminder, so a delivery failure inside the window becomes a
+    permanent, silent omission. Leaving a failed reminder pending buys a retry
+    but does not, on its own, make the eventual loss audible. This is what the
+    scheduler reports so that it does.
+    """
+    today = reference_date or date.today()
+    expired = []
+    for r in _load()["reminders"]:
+        if r.get("sent"):
+            continue
+        try:
+            dl = date.fromisoformat(r["deadline"])
+        except (KeyError, ValueError):
+            continue
+        if dl < today:
+            expired.append(r)
+    return expired
+
+
 def mark_sent(reminder_id: str) -> None:
     """Mark a reminder as sent so it doesn't fire again."""
     data = _load()

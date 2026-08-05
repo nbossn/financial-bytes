@@ -210,15 +210,25 @@ def _run_all_portfolios() -> None:
             logger.exception(f"Combined group email failed for group '{group_name}': {e}")
 
 
-def _send_reminder_discord(reminders: list[dict]) -> None:
-    """Post pending decision reminders to Discord webhook."""
-    import os
+def _send_reminder_discord(reminders: list[dict]) -> bool:
+    """Post pending decision reminders to Discord. Returns True only if delivered.
+
+    The return value is load-bearing: the caller records reminders as sent, and
+    a sender that returns the same thing whether or not it posted gives it
+    nothing to branch on. That is exactly how 2026-05-07's two reminders were
+    marked delivered without being delivered.
+    """
     import requests
 
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    from src.config import discord_webhook
+
+    webhook_url = discord_webhook()
     if not webhook_url:
-        logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord alert")
-        return
+        logger.warning(
+            "DISCORD_WEBHOOK_URL not resolvable (checked process env and .env) "
+            "— reminder alert NOT sent; reminders stay pending"
+        )
+        return False
 
     lines = ["⏰ **Decision reminder(s) due today**"]
     for r in reminders:
@@ -228,14 +238,31 @@ def _send_reminder_discord(reminders: list[dict]) -> None:
     try:
         resp = requests.post(webhook_url, json={"content": "\n".join(lines)}, timeout=10)
         resp.raise_for_status()
-        logger.info(f"Reminder Discord alert sent ({len(reminders)} reminder(s))")
     except Exception as e:
-        logger.warning(f"Reminder Discord alert failed: {e}")
+        logger.warning(f"Reminder Discord alert failed: {e} — reminders stay pending")
+        return False
+
+    logger.info(f"Reminder Discord alert sent ({len(reminders)} reminder(s))")
+    return True
 
 
 def _run_reminder_check() -> None:
     """Run at 6:00 AM ET — send Discord alert for any reminders due within 24h."""
-    from src.portfolio.reminders import get_due_reminders, mark_sent
+    from src.portfolio.reminders import (
+        get_due_reminders,
+        get_expired_unsent_reminders,
+        mark_sent,
+    )
+
+    # Reported before the send, so an expiry is surfaced even on a day when
+    # nothing is due — which is every day a lost reminder would otherwise be
+    # invisible.
+    expired = get_expired_unsent_reminders()
+    if expired:
+        detail = ", ".join(f"{r['id']} (deadline {r['deadline']})" for r in expired)
+        logger.warning(
+            f"Reminder check: {len(expired)} reminder(s) expired UNDELIVERED — {detail}"
+        )
 
     due = get_due_reminders()
     if not due:
@@ -243,20 +270,37 @@ def _run_reminder_check() -> None:
         return
 
     logger.info(f"Reminder check: {len(due)} reminder(s) due")
-    _send_reminder_discord(due)
+    if not _send_reminder_discord(due):
+        # Deliberately not marked sent. The reminder is time-gated, so this
+        # only buys a retry until the deadline passes — after which the warning
+        # above is the record that it was lost.
+        logger.warning(
+            f"Reminder check: {len(due)} reminder(s) left PENDING — delivery failed"
+        )
+        return
+
     for r in due:
         mark_sent(r["id"])
 
 
-def _send_premarket_discord(results: list) -> None:
-    """Post premarket inference results to Discord webhook."""
-    import os
+def _send_premarket_discord(results: list) -> bool:
+    """Post premarket inference results to Discord. Returns True only if delivered.
+
+    Records no state, so a failure here loses one morning rather than a
+    decision — but it is dead in cron for the same reason the reminder sender
+    was, and reporting the outcome is what makes that visible.
+    """
     import requests
 
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    from src.config import discord_webhook
+
+    webhook_url = discord_webhook()
     if not webhook_url:
-        logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord alert")
-        return
+        logger.warning(
+            "DISCORD_WEBHOOK_URL not resolvable (checked process env and .env) "
+            "— premarket alert NOT sent"
+        )
+        return False
 
     lines = ["📊 **Pre-market earnings check** (7:10 AM ET)"]
     for result in results:
@@ -273,9 +317,12 @@ def _send_premarket_discord(results: list) -> None:
     try:
         resp = requests.post(webhook_url, json={"content": "\n".join(lines)}, timeout=10)
         resp.raise_for_status()
-        logger.info("Premarket earnings Discord alert sent")
     except Exception as e:
         logger.warning(f"Premarket Discord alert failed: {e}")
+        return False
+
+    logger.info("Premarket earnings Discord alert sent")
+    return True
 
 
 def _run_premarket_earnings_check() -> None:

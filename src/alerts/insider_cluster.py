@@ -435,9 +435,14 @@ def cluster_alert(result: ClusterResult) -> None:
     import json as _json
     import urllib.request as _req
 
-    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
+    from src.config import discord_webhook
+
+    webhook = discord_webhook()
     if not webhook:
-        logger.debug("insider_cluster: DISCORD_WEBHOOK_URL not set — skipping alert")
+        logger.debug(
+            "insider_cluster: DISCORD_WEBHOOK_URL not resolvable "
+            "(checked process env and .env) — skipping alert"
+        )
         return
 
     val_str = f"~${result.total_value:,.0f}" if result.total_value else "value unknown"

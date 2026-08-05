@@ -572,9 +572,14 @@ def squeeze_alert(result: SqueezeResult) -> bool:
     Returns:
         True if the alert was sent successfully, False otherwise.
     """
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    from src.config import discord_webhook
+
+    webhook_url = discord_webhook()
     if not webhook_url:
-        logger.warning("squeeze_alert: DISCORD_WEBHOOK_URL not set — skipping Discord alert")
+        logger.warning(
+            "squeeze_alert: DISCORD_WEBHOOK_URL not resolvable "
+            "(checked process env and .env) — skipping Discord alert"
+        )
         return False
 
     if result.score < 7:

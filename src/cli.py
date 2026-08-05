@@ -881,8 +881,10 @@ def tax_aware_stops(
     if not no_alert:
         actionable = [s for s in stops if s.action in ("HARVEST", "EXIT_TAX_DRAG_LOW", "EXIT_LTCG")]
         if actionable:
-            import os, requests as _req
-            webhook = os.getenv("DISCORD_WEBHOOK_URL")
+            import requests as _req
+
+            from src.config import discord_webhook
+            webhook = discord_webhook()
             if webhook:
                 msg = format_tax_aware_discord(stops, portfolio_name)
                 try:

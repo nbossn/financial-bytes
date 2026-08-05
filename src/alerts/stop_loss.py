@@ -25,9 +25,13 @@ import yfinance as yf
 from loguru import logger
 
 from src.api.symbols import resolve_symbol
+from src.config import discord_webhook
 
 
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+# Resolved at call time via src.config.discord_webhook(). It used to be
+# captured here at import, which is strictly worse: a module-level
+# os.getenv freezes the answer before the process has finished deciding
+# what its environment is.
 
 
 @dataclass
@@ -118,8 +122,12 @@ def _send_discord_alert(checks: list[StopLossCheck], portfolio_name: str) -> Non
     """Post stop-loss alert to Discord webhook."""
     if not checks:
         return
-    if not DISCORD_WEBHOOK_URL:
-        logger.warning("DISCORD_WEBHOOK_URL not set — skipping stop-loss Discord alert")
+    webhook = discord_webhook()
+    if not webhook:
+        logger.warning(
+            "DISCORD_WEBHOOK_URL not resolvable (checked process env and .env) "
+            "— skipping stop-loss Discord alert"
+        )
         return
 
     lines = [f"🔴 **Stop-Loss Alert — {portfolio_name}**\n"]
@@ -137,7 +145,7 @@ def _send_discord_alert(checks: list[StopLossCheck], portfolio_name: str) -> Non
 
     try:
         resp = requests.post(
-            DISCORD_WEBHOOK_URL,
+            webhook,
             json={"content": content},
             timeout=10,
         )
@@ -218,8 +226,12 @@ def _send_discord_alert_dynamic(
     """Post dynamic stop-loss alert to Discord webhook."""
     if not checks:
         return
-    if not DISCORD_WEBHOOK_URL:
-        logger.warning("DISCORD_WEBHOOK_URL not set — skipping dynamic stop-loss Discord alert")
+    webhook = discord_webhook()
+    if not webhook:
+        logger.warning(
+            "DISCORD_WEBHOOK_URL not resolvable (checked process env and .env) "
+            "— skipping dynamic stop-loss Discord alert"
+        )
         return
     lines = [f"🔴 **Stop-Loss Alert ({mode}) — {portfolio_name}**\n"]
     for c in checks:
@@ -233,7 +245,7 @@ def _send_discord_alert_dynamic(
         )
     lines.append("\nReview positions — no auto-action taken.")
     try:
-        resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": "\n".join(lines)}, timeout=10)
+        resp = requests.post(webhook, json={"content": "\n".join(lines)}, timeout=10)
         resp.raise_for_status()
         logger.info(f"Discord {mode} stop-loss alert sent ({len(checks)} triggers)")
     except Exception as e:

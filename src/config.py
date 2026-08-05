@@ -73,9 +73,34 @@ class Settings(BaseSettings):
     robinhood_password: str = Field("", alias="ROBINHOOD_PASSWORD")
     robinhood_mfa_secret: str = Field("", alias="ROBINHOOD_MFA_SECRET")
 
+    # Discord alerting (reminders, pre-market check, stop-loss / squeeze alerts)
+    discord_webhook_url: str = Field("", alias="DISCORD_WEBHOOK_URL")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     log_file: str = Field("logs/financial_bytes.log", alias="LOG_FILE")
 
 
 settings = Settings()
+
+
+def discord_webhook() -> str:
+    """Resolve the Discord webhook URL, or "" when it is genuinely unset.
+
+    Every Discord posting site must go through here rather than reading the
+    process environment directly. The scheduler daemon is launched by cron and
+    @reboot and runs with EIGHT environment variables — DISCORD_WEBHOOK_URL is
+    not one of them — while `.env` has held the value the whole time. A bare
+    `os.getenv` therefore reports "not configured" for a webhook that is
+    configured, which is how two real reminders were dropped on 2026-05-07.
+
+    Precedence is deliberate and matches pydantic's own: an explicit export
+    overrides the file, so an operator can still redirect alerts for one run.
+    Resolved at call time, not import time, so a value set after import is seen.
+    """
+    import os
+
+    exported = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
+    if exported:
+        return exported
+    return (settings.discord_webhook_url or "").strip()
