@@ -636,13 +636,18 @@ def check_stops(portfolio: str, portfolio_name: str, no_alert: bool, mode: str, 
     volatility.
     """
     from pathlib import Path
-    from src.alerts.stop_loss import run_stop_loss_check
+    from src.alerts.stop_loss import count_evaluable_positions, run_stop_loss_check
 
     csv_path = Path(portfolio)
     if not csv_path.exists():
         raise click.UsageError(f"Portfolio CSV not found: {csv_path}")
 
     mode = mode.lower()
+    # An empty result means "nothing breached" OR "nothing configured". Measure
+    # the second separately, or the all-clear below reports an unprotected
+    # portfolio as a safe one.
+    evaluable = count_evaluable_positions(csv_path, mode)
+    total = count_evaluable_positions(csv_path, "dynamic")
     if mode == "static":
         triggered = run_stop_loss_check(
             csv_path=csv_path,
@@ -674,8 +679,19 @@ def check_stops(portfolio: str, portfolio_name: str, no_alert: bool, mode: str, 
                     f"(threshold ${float(t.threshold_price):.2f}, "
                     f"loss ${float(t.total_loss):,.0f})"
                 )
+    elif evaluable == 0:
+        click.echo(
+            f"⚠️  Nothing was checked: {evaluable} of {total} position(s) have a "
+            f"threshold in [{mode} mode]. These positions are NOT protected — "
+            f"this is not an all-clear."
+        )
+        if mode == "static":
+            click.echo("   Set stop_loss_pct in the portfolio CSV, or run with --mode dynamic.")
     else:
-        click.echo(f"✅ No stop-loss triggers — all positions within thresholds [{mode} mode]")
+        click.echo(
+            f"✅ No stop-loss triggers — {evaluable} of {total} position(s) "
+            f"within thresholds [{mode} mode]"
+        )
 
 
 # ── suggest-stops ─────────────────────────────────────────────────

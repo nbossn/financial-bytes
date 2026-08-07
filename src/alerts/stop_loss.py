@@ -319,6 +319,27 @@ def _run_dynamic_check(
     return triggered
 
 
+def count_evaluable_positions(csv_path: str | Path, mode: str = "static") -> int:
+    """How many positions this mode would actually measure against a threshold.
+
+    ``run_stop_loss_check`` returns an empty list both when nothing is configured
+    and when nothing is breached, so its caller cannot tell "checked and safe"
+    from "checked nothing". This answers the second half separately, using the
+    same loaders the check itself uses so the two cannot drift.
+
+    Raises:
+        ValueError: on an unknown mode. Returning 0 would be the value that
+            silences the alarm, so an unrecognised mode must not produce it.
+    """
+    mode = (mode or "").lower()
+    path = Path(csv_path)
+    if mode == "static":
+        return len(_load_stop_loss_positions(path))
+    if mode in ("dynamic", "hybrid"):
+        return len(_load_all_positions(path))
+    raise ValueError(f"unknown stop-loss mode: {mode!r}")
+
+
 def run_stop_loss_check(
     csv_path: str | Path,
     portfolio_name: str = "portfolio",
