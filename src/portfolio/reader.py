@@ -56,8 +56,12 @@ def read_portfolio(csv_path: str | Path) -> list[Holding]:
                     raise ValueError(f"cost_basis must be positive, got {cost_basis}")
 
                 raw_date = row["purchase_date"].strip()
-                # Missing purchase date → sentinel old date (treats position as LTCG)
-                purchase_date = date.fromisoformat(raw_date) if raw_date else date(2000, 1, 1)
+                # Missing purchase date stays unknown. The previous sentinel
+                # (2000-01-01) classified every dateless position as long-term,
+                # quietly applying the 23.8% LTCG rate to holdings that may be
+                # short-term. Downstream treats None as "unknown" and widens the
+                # tax band instead of guessing in the taxpayer's favour.
+                purchase_date = date.fromisoformat(raw_date) if raw_date else None
 
                 account_number = row.get("account_number", "").strip() or None
 

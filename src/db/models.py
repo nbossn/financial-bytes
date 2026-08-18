@@ -32,7 +32,10 @@ class Portfolio(Base):
     ticker = Column(String(10), nullable=False)
     shares = Column(Numeric(15, 4), nullable=False)
     cost_basis = Column(Numeric(15, 4), nullable=False)
-    purchase_date = Column(Date, nullable=False)
+    # Nullable: Fidelity's positions export has no lot dates. NOT NULL forced the
+    # pipeline to invent one just to persist, which is how a fabricated date
+    # reached the analyst agent. Unknown is a legitimate state.
+    purchase_date = Column(Date, nullable=True)
     created_at = Column(DateTime, default=_now)
     account_number = Column(String(20), nullable=True, index=True)
 

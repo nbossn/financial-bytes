@@ -1931,3 +1931,110 @@ def insider_cluster(ticker: str, lookback: int, window: int, min_insiders: int, 
 
 if __name__ == "__main__":
     cli()
+
+
+# ── fidelity-lots ─────────────────────────────────────────────────
+@cli.command("fidelity-lots")
+@click.option("--portfolio", "-p", required=True, callback=_validate_portfolio_name,
+              help="Portfolio name (e.g. lilich, nbossn_fidelity)")
+@click.option("--dry-run", is_flag=True, help="Print lots without writing purchase history")
+def fidelity_lots(portfolio: str, dry_run: bool) -> None:
+    """Scrape per-lot acquisition dates from Fidelity's Tax Loss Harvesting page.
+
+    Fidelity's positions export carries no lot dates, which leaves holding period
+    unknown and the tax rate reported as a 24%-41% band instead of 23.8% LTCG vs
+    ordinary income. This fills that gap and writes the result into the
+    portfolio's purchase_history JSON.
+
+    \b
+    Scope limit: Fidelity's TLH tool only lists positions currently at a LOSS.
+    That covers every harvest candidate — where holding period actually changes
+    the decision — but it will not return lot dates for winners.
+
+    Existing hand-curated entries in purchase_history are never overwritten.
+    """
+    from src.portfolio.portfolio_config import get_portfolio_config
+    from src.portfolio.fidelity_scraper import (
+        sync_fidelity_lot_dates, FidelityScraperError,
+        FidelityCredentialError, FidelityAuthError,
+    )
+    from src.portfolio.fidelity_lots import write_purchase_history
+
+    try:
+        config = get_portfolio_config(portfolio)
+    except Exception as e:
+        raise click.UsageError(f"Unknown portfolio '{portfolio}': {e}")
+
+    creds_prefix = getattr(config, "fidelity_creds_prefix", "") or ""
+
+    click.echo(f"\n🏦 Scraping tax lot dates for portfolio: {portfolio}")
+
+    try:
+        lots = sync_fidelity_lot_dates(creds_prefix=creds_prefix)
+    except FidelityCredentialError as e:
+        raise click.UsageError(str(e))
+    except FidelityAuthError as e:
+        raise click.UsageError(f"Authentication failed: {e}")
+    except FidelityScraperError as e:
+        raise click.UsageError(f"Scrape failed: {e}")
+
+    if not lots:
+        click.echo("\n⚠️  No tax lots found — nothing at a loss, or the page layout changed.")
+        return
+
+    # The TLH page spans every account on the login. Restrict to this portfolio's
+    # own holdings so trust lots can never land in the personal purchase history.
+    try:
+        from src.portfolio.fidelity_reader import read_fidelity_positions
+        from src.portfolio.fidelity_lots import filter_lots_to_holdings
+
+        held = read_fidelity_positions(
+            config.fidelity_positions,
+            account_filter=getattr(config, "fidelity_account_filter", None),
+        )
+        held_shares: dict[str, float] = {}
+        for h in held:
+            held_shares[h.ticker] = held_shares.get(h.ticker, 0.0) + float(h.shares)
+
+        lots, dropped, mismatches = filter_lots_to_holdings(lots, held_shares)
+        if dropped:
+            click.echo(
+                f"\n⚠️  Ignored {len(dropped)} ticker(s) not in this portfolio "
+                f"(another account on the same login): {', '.join(dropped)}"
+            )
+        for ticker, lot_total, portfolio_shares in mismatches:
+            click.echo(
+                f"\n⚠️  {ticker}: lots cover {lot_total:,.3f} sh but portfolio holds "
+                f"{portfolio_shares:,.3f} sh — treat as partial."
+            )
+    except Exception as e:
+        click.echo(f"\n⚠️  Could not cross-check lots against holdings ({e}) — writing unfiltered.")
+
+    if not lots:
+        click.echo("\n⚠️  No lots remain after account cross-check.")
+        return
+
+    total_lots = sum(len(v) for v in lots.values())
+    click.echo(f"\n📄 {total_lots} lot(s) across {len(lots)} ticker(s):\n")
+    for ticker in sorted(lots):
+        for lot in lots[ticker]:
+            basis = lot.get("cost_basis")
+            basis_str = f"${basis:,.2f}" if basis is not None else "—"
+            click.echo(
+                f"   {ticker:6} {lot['purchase_date']}  "
+                f"{lot['shares']:>10,.3f} sh @ {basis_str}"
+            )
+
+    if dry_run:
+        click.echo("\n(dry run — purchase history not written)")
+        return
+
+    if not config.purchase_history:
+        click.echo(
+            f"\n⚠️  Portfolio '{portfolio}' has no purchase_history path configured; "
+            "add one to portfolios.json to persist these lots."
+        )
+        return
+
+    write_purchase_history(config.purchase_history, lots)
+    click.echo(f"\n✅ Merged into {config.purchase_history}")
