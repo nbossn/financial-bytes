@@ -73,57 +73,87 @@ def _apply_purchase_history_to_holdings(
             holding.purchase_date = min(dates)
 
 
+def _split_by_max_positions(holdings: list, pdef) -> tuple[list, list]:
+    """Split holdings into (analyzed, excluded) by allowlist or top-N cap.
+
+    Priority:
+      1. allowed_tickers — if set, keep ONLY those tickers (exact match, case-insensitive).
+         This is the authoritative scope for portfolios like Lilich where the CSV may
+         contain the full account but only a subset of tickers are under management.
+      2. max_positions — if set and no allowlist, keep top-N by total cost-basis value.
+
+    Both lists are returned. The excluded ones are still owned, so the snapshot
+    must count them in its totals even though they get no analyst call — see
+    PortfolioSnapshot.excluded_holdings.
+    """
+    # 1. Allowlist takes precedence
+    if pdef.allowed_tickers:
+        allowed = {t.upper() for t in pdef.allowed_tickers}
+        kept = [h for h in holdings if h.ticker.upper() in allowed]
+        excluded = [h for h in holdings if h.ticker.upper() not in allowed]
+        logger.info(
+            f"  allowed_tickers filter: keeping {len(kept)} of {len(holdings)} holdings "
+            f"for {pdef.name} — excluded {len(excluded)}: {[h.ticker for h in excluded][:10]}"
+        )
+        return kept, excluded
+
+    # 2. Top-N cap fallback
+    if pdef.max_positions and len(holdings) > pdef.max_positions:
+        ranked = sorted(holdings, key=lambda h: h.shares * h.cost_basis, reverse=True)
+        kept = ranked[: pdef.max_positions]
+        excluded = ranked[pdef.max_positions :]
+        logger.info(
+            f"  max_positions={pdef.max_positions}: analyzing top {len(kept)} of "
+            f"{len(holdings)} holdings by value for {pdef.name}; "
+            f"{len(excluded)} excluded from analysis but still counted in totals"
+        )
+        return kept, excluded
+
+    return list(holdings), []
+
+
 def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
     """Look up portfolio by name in portfolios.json and return (csv_path, is_temp).
+
+    Thin wrapper over :func:`_resolve_portfolio_csv_ex` for callers that do not
+    care which positions fell outside analyst coverage.
+    """
+    csv_path, is_temp, _excluded = _resolve_portfolio_csv_ex(portfolio_name)
+    return csv_path, is_temp
+
+
+def _resolve_portfolio_csv_ex(portfolio_name: str) -> tuple[str, bool, list]:
+    """Resolve holdings source, returning (csv_path, is_temp, excluded_holdings).
 
     Tries fidelity_positions → transactions_path → csv_path in that order.
     Falls back to settings.portfolio_csv_path if nothing is configured.
     Caller must unlink the file when is_temp is True.
+
+    `excluded_holdings` are positions trimmed by max_positions/allowed_tickers.
+    They are deliberately kept out of the CSV (they get no analyst call) but the
+    caller must still count them in portfolio totals — otherwise capping coverage
+    silently shrinks the reported account.
     """
     from src.portfolio.portfolio_config import load_portfolio_defs
+
+    excluded: list = []
 
     try:
         defs = load_portfolio_defs()
     except Exception as e:
         logger.warning(f"Could not load portfolio config: {e}")
-        return settings.portfolio_csv_path, False
+        return settings.portfolio_csv_path, False, excluded
 
     pdef = next((d for d in defs if d.name == portfolio_name), None)
     if pdef is None:
         logger.warning(f"Portfolio '{portfolio_name}' not found in config, using default CSV")
-        return settings.portfolio_csv_path, False
+        return settings.portfolio_csv_path, False, excluded
 
     def _apply_max_positions(holdings: list, pdef) -> list:
-        """Filter holdings by allowed_tickers allowlist (strict) or max_positions cap (top-N).
-
-        Priority:
-          1. allowed_tickers — if set, keep ONLY those tickers (exact match, case-insensitive).
-             This is the authoritative scope for portfolios like Lilich where the CSV may
-             contain the full account but only a subset of tickers are under management.
-          2. max_positions — if set and no allowlist, keep top-N by total cost-basis value.
-        """
-        # 1. Allowlist takes precedence
-        if pdef.allowed_tickers:
-            allowed = {t.upper() for t in pdef.allowed_tickers}
-            filtered = [h for h in holdings if h.ticker.upper() in allowed]
-            excluded = [h.ticker for h in holdings if h.ticker.upper() not in allowed]
-            logger.info(
-                f"  allowed_tickers filter: keeping {len(filtered)} of {len(holdings)} holdings "
-                f"for {pdef.name} — excluded {len(excluded)}: {excluded[:10]}"
-            )
-            return filtered
-
-        # 2. Top-N cap fallback
-        if pdef.max_positions and len(holdings) > pdef.max_positions:
-            top = sorted(holdings, key=lambda h: h.shares * h.cost_basis, reverse=True)
-            top = top[: pdef.max_positions]
-            logger.info(
-                f"  max_positions={pdef.max_positions}: keeping top {len(top)} of "
-                f"{len(holdings)} holdings by value for {pdef.name}"
-            )
-            return top
-
-        return holdings
+        """Keep the analyzed holdings; record the rest for the caller's totals."""
+        kept, dropped = _split_by_max_positions(holdings, pdef)
+        excluded.extend(dropped)
+        return kept
 
     # ── Plaid (live, preferred when configured) ──────────────────────
     if pdef.plaid_access_token_env:
@@ -141,7 +171,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
                 ) as tmp:
                     tmp_path = tmp.name
                 export_holdings_to_csv(holdings, tmp_path)
-                return tmp_path, True
+                return tmp_path, True, excluded
             except Exception as e:
                 logger.warning(f"[plaid] Failed to fetch live holdings ({e}) — falling through to Fidelity CSV")
         else:
@@ -169,7 +199,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
                 ) as tmp:
                     tmp_path = tmp.name
                 export_holdings_to_csv(holdings, tmp_path)
-                return tmp_path, True
+                return tmp_path, True, excluded
             except Exception as e:
                 logger.warning(
                     f"[fidelity] Live scrape failed ({e}) — falling through to static CSV"
@@ -190,7 +220,7 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         ) as tmp:
             tmp_path = tmp.name
         export_holdings_to_csv(holdings, tmp_path)
-        return tmp_path, True
+        return tmp_path, True, excluded
 
     if pdef.transactions_path:
         from src.portfolio.transaction_reader import read_transactions, export_holdings_to_csv
@@ -200,12 +230,12 @@ def _resolve_portfolio_csv(portfolio_name: str) -> tuple[str, bool]:
         ) as tmp:
             tmp_path = tmp.name
         export_holdings_to_csv(holdings, tmp_path)
-        return tmp_path, True
+        return tmp_path, True, excluded
 
     if pdef.csv_path:
-        return pdef.csv_path, False
+        return pdef.csv_path, False, excluded
 
-    return settings.portfolio_csv_path, False
+    return settings.portfolio_csv_path, False, excluded
 
 
 def _resolve_recipients(portfolio_name: str, override: list[str] | None) -> list[str] | None:
@@ -636,9 +666,9 @@ def run_pipeline(
     # ── Phase 1: Portfolio ─────────────────────────────────────────
     logger.info("[1/5] Loading portfolio...")
     # Resolve holdings source: explicit path → portfolios.json lookup → env default
-    csv_path, _is_temp_csv = (
-        (portfolio_csv, False) if portfolio_csv
-        else _resolve_portfolio_csv(portfolio_name)
+    csv_path, _is_temp_csv, _excluded_holdings = (
+        (portfolio_csv, False, []) if portfolio_csv
+        else _resolve_portfolio_csv_ex(portfolio_name)
     )
     email_recipients = _resolve_recipients(portfolio_name, email_recipients)
     lot_overrides = _load_purchase_history(portfolio_name)
@@ -656,8 +686,17 @@ def run_pipeline(
     # Apply earliest lot dates to holdings for accurate analyst context
     if lot_overrides:
         _apply_purchase_history_to_holdings(holdings, lot_overrides)
-    snapshot = PortfolioSnapshot(holdings=holdings, lot_overrides=lot_overrides)
-    logger.debug(f"      {len(holdings)} holding(s) loaded — value ${snapshot.total_value:,.2f}")
+    snapshot = PortfolioSnapshot(
+        holdings=holdings,
+        lot_overrides=lot_overrides,
+        excluded_holdings=_excluded_holdings,
+    )
+    if snapshot.is_truncated:
+        logger.info(
+            f"      {snapshot.analyzed_count} of {snapshot.position_count} position(s) under "
+            f"analyst coverage; the other {len(_excluded_holdings)} are still counted in totals"
+        )
+    logger.debug(f"      {snapshot.position_count} holding(s) loaded — value ${snapshot.total_value:,.2f}")
 
     # Register pipeline run — allows resume detection on subsequent calls.
     # _pipeline_exc tracks any failure so the finally block can write "failed" to DB.
@@ -728,7 +767,13 @@ def run_pipeline(
     _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="signals")
 
     if market_prices:
-        snapshot = PortfolioSnapshot(holdings=holdings, prices=market_prices, as_of=today, lot_overrides=lot_overrides)
+        snapshot = PortfolioSnapshot(
+            holdings=holdings,
+            prices=market_prices,
+            as_of=today,
+            lot_overrides=lot_overrides,
+            excluded_holdings=_excluded_holdings,
+        )
 
     # A holding with no market price is valued at cost basis, which reports
     # unrealized P&L of exactly $0.00 — indistinguishable from a flat position.

@@ -11,7 +11,10 @@
 | **Cost Basis** | ${{ snapshot.total_cost | format_number }} |
 | **Current Value** | ${{ snapshot.total_value | format_number }} |
 | **Unrealized P&L** | {{ '+' if snapshot.total_pnl >= 0 }}${{ snapshot.total_pnl | abs | format_number }} ({{ '+' if snapshot.total_pnl_pct >= 0 }}{{ "%.1f"|format(snapshot.total_pnl_pct) }}%) |
-| **Positions** | {{ snapshot.holdings | length }} |
+| **Positions** | {{ snapshot.position_count }}{% if snapshot.is_truncated %} ({{ snapshot.analyzed_count }} analyzed){% endif %} |
+{% if snapshot.is_truncated %}
+> ⚠️ Analyst coverage spans the largest {{ snapshot.analyzed_count }} of {{ snapshot.position_count }} positions. The remaining {{ snapshot.position_count - snapshot.analyzed_count }} (${{ snapshot.excluded_value | format_number }}) are included in the totals above but receive no analyst commentary below.
+{% endif %}
 
 ---
 

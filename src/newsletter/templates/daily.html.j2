@@ -238,7 +238,7 @@
       <div class="portfolio-card">
         <div class="label">Cost Basis</div>
         <div class="value">${{ snapshot.total_cost | format_number }}</div>
-        <div class="sub">{{ snapshot.holdings | length }} position{{ 's' if snapshot.holdings | length != 1 }}</div>
+        <div class="sub">{{ snapshot.position_count }} position{{ 's' if snapshot.position_count != 1 }}{% if snapshot.is_truncated %} · {{ snapshot.analyzed_count }} analyzed{% endif %}</div>
       </div>
       <div class="portfolio-card">
         <div class="label">Current Value</div>
