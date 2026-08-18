@@ -181,3 +181,44 @@ class TestMissingPriceWarningDenominator:
         )
         assert len(snap.missing_prices) <= snap.position_count
         assert snap.position_count == 2
+
+
+class TestPriceFetchReadsTheRightField:
+    """The first cut read `quote.price`, which QuoteSnapshot does not have.
+
+    Every lookup returned None, so the batch fetch reported success while
+    pricing 0 of 192 holdings. Pin the real attribute.
+    """
+
+    def test_quote_snapshot_exposes_current_price(self):
+        from src.api.models import QuoteSnapshot
+
+        assert "current_price" in QuoteSnapshot.model_fields
+        assert "price" not in QuoteSnapshot.model_fields
+
+    def test_fetch_prices_only_maps_current_price(self, monkeypatch):
+        from decimal import Decimal
+
+        from src.api.models import QuoteSnapshot
+        from src.pipeline import main_pipeline
+
+        monkeypatch.setattr(
+            "src.api.yfinance_client.get_quotes_batch_yfinance",
+            lambda tickers: {
+                "KOS": QuoteSnapshot(ticker="KOS", current_price=Decimal("12.34"))
+            },
+        )
+
+        assert main_pipeline._fetch_prices_only(["KOS"]) == {"KOS": Decimal("12.34")}
+
+    def test_quotes_without_a_price_are_skipped(self, monkeypatch):
+        from src.pipeline import main_pipeline
+
+        class _NoPrice:
+            current_price = None
+
+        monkeypatch.setattr(
+            "src.api.yfinance_client.get_quotes_batch_yfinance",
+            lambda tickers: {"KOS": _NoPrice()},
+        )
+        assert main_pipeline._fetch_prices_only(["KOS"]) == {}

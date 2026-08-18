@@ -81,7 +81,9 @@ def _fetch_prices_only(tickers: list[str]) -> dict:
 
     out: dict[str, Decimal] = {}
     for ticker, quote in (get_quotes_batch_yfinance(tickers) or {}).items():
-        price = getattr(quote, "price", None) or getattr(quote, "last_price", None)
+        # QuoteSnapshot.current_price — guessing this attribute name is how the
+        # first cut silently priced 0/192 holdings while logging success.
+        price = getattr(quote, "current_price", None)
         if price is not None:
             out[ticker] = Decimal(str(price))
     return out
