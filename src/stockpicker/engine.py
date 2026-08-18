@@ -216,10 +216,14 @@ def load_universe(csv_path: str | None = None) -> list[str]:
              "FDRXX", "VTSAX"}
     tickers: set[str] = set()
     import csv as _csv
+
+    from src.portfolio.fidelity_reader import _normalize_row
     with open(csv_path, encoding="utf-8-sig") as f:
         for row in _csv.DictReader(f):
-            acc = (row.get("Account Number") or "").strip()
-            sym = (row.get("Symbol") or "").strip()
+            # Fidelity varies header casing between exports (2026-08-18)
+            norm = _normalize_row(row)
+            acc = (norm.get("account number") or "").strip()
+            sym = (norm.get("symbol") or "").strip()
             if acc not in accounts or not sym:
                 continue
             if any(x in sym for x in skip_substr) or sym in funds:

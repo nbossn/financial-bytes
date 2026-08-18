@@ -2,14 +2,80 @@
 from __future__ import annotations
 
 import csv
+import glob as _glob
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from loguru import logger
 
 from src.portfolio.models import Holding
+
+# Warn when the newest available export is older than this. The Jun-24 export
+# was silently used for 55 days while the newsletter reported live prices.
+STALE_EXPORT_DAYS = 7
+
+# e.g. "Portfolio_Positions_Aug-18-2026.csv", "Portfolio_Positions_Aug-18-2026 (3).csv"
+_EXPORT_DATE_RE = re.compile(r"Portfolio_Positions_([A-Z][a-z]{2}-\d{2}-\d{4})")
+
+
+def _export_date(path: Path) -> date | None:
+    """Parse the export date out of a Fidelity positions filename."""
+    m = _EXPORT_DATE_RE.search(path.name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%b-%d-%Y").date()
+    except ValueError:
+        return None
+
+
+def resolve_positions_path(csv_path: str | Path) -> Path:
+    """Resolve a positions-CSV path that may be a glob, to the newest export.
+
+    Ranks matches by the date embedded in the filename (Fidelity's own naming),
+    falling back to mtime for undated names and for same-day repeat downloads
+    ("... (1).csv", "... (2).csv"). Comparing parsed dates rather than filename
+    strings matters: lexically "Aug" sorts before "Jun", so a plain sort picks
+    the wrong file.
+
+    A concrete (non-glob) path is returned unchanged if it exists.
+    """
+    raw = str(csv_path)
+
+    if not _glob.has_magic(raw):
+        path = Path(raw)
+        if not path.exists():
+            raise FileNotFoundError(f"Fidelity positions file not found: {path}")
+        return path
+
+    matches = [Path(p) for p in _glob.glob(raw)]
+    matches = [p for p in matches if p.is_file()]
+    if not matches:
+        raise FileNotFoundError(f"No Fidelity positions export matched: {raw}")
+
+    # Sort key: (has-date, date, mtime). Undated files rank below dated ones,
+    # ordered among themselves by mtime.
+    def _key(p: Path):
+        d = _export_date(p)
+        return (d is not None, d or date.min, p.stat().st_mtime)
+
+    newest = max(matches, key=_key)
+
+    exported = _export_date(newest)
+    if exported is not None:
+        age = (date.today() - exported).days
+        if age > STALE_EXPORT_DAYS:
+            logger.warning(
+                f"Fidelity positions export is stale: {newest.name} is {age} days old "
+                f"(> {STALE_EXPORT_DAYS}). Run `financial-bytes fidelity-sync` to refresh."
+            )
+
+    if len(matches) > 1:
+        logger.info(f"Resolved {raw} → {newest.name} (newest of {len(matches)} exports)")
+
+    return newest
 
 
 # Symbols to always skip (money market funds, ETFs used as cash equivalents)
@@ -41,6 +107,23 @@ def _is_skip_symbol(symbol: str) -> bool:
     return bare in _SKIP_SYMBOLS
 
 
+def _normalize_row(row: dict) -> dict:
+    """Lower-case and collapse whitespace in a CSV row's keys.
+
+    Fidelity changed its export header casing between 2026-06-24 and
+    2026-08-18 ("Account Number" -> "Account number", "Average Cost Basis"
+    -> "Average cost basis"). Exact-key lookups silently returned None for
+    every renamed column, so all rows were dropped as "no cost basis data".
+    Normalizing keys makes the reader tolerant of either casing.
+    """
+    normalized = {}
+    for key, value in row.items():
+        if key is None:
+            continue
+        normalized[" ".join(key.split()).lower()] = value
+    return normalized
+
+
 def read_fidelity_positions(
     csv_path: str | Path,
     account_filter: str | None = None,
@@ -63,9 +146,7 @@ def read_fidelity_positions(
     Returns:
         List of Holding objects (one per ticker, fractional shares supported).
     """
-    path = Path(csv_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Fidelity positions file not found: {path}")
+    path = resolve_positions_path(csv_path)
 
     holdings: list[Holding] = []
     skipped: list[str] = []
@@ -73,9 +154,12 @@ def read_fidelity_positions(
     with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
 
-        for row in reader:
+        for raw_row in reader:
+            # Fidelity varies header casing between exports — match case-insensitively
+            row = _normalize_row(raw_row)
+
             # Skip footer/disclaimer rows (Fidelity appends these after data)
-            symbol_raw = (row.get("Symbol") or "").strip()
+            symbol_raw = (row.get("symbol") or "").strip()
             if not symbol_raw:
                 continue
 
@@ -87,8 +171,8 @@ def read_fidelity_positions(
             # Account filter — supports str (single) or list[str] (OR logic)
             # Matches against both Account Name and Account Number (case-insensitive)
             if account_filter:
-                account_name = row.get("Account Name", "")
-                account_number = row.get("Account Number", "")
+                account_name = row.get("account name") or ""
+                account_number = row.get("account number") or ""
                 filters = account_filter if isinstance(account_filter, list) else [account_filter]
                 if not any(
                     f.lower() in account_name.lower() or f.lower() in account_number.lower()
@@ -98,14 +182,14 @@ def read_fidelity_positions(
 
             ticker = _SKIP_PATTERN.sub("", symbol_raw).upper()
 
-            quantity = _clean_decimal(row.get("Quantity") or "")
-            avg_cost = _clean_decimal(row.get("Average Cost Basis") or "")
-            cost_basis_total = _clean_decimal(row.get("Cost Basis Total") or "")
+            quantity = _clean_decimal(row.get("quantity") or "")
+            avg_cost = _clean_decimal(row.get("average cost basis") or "")
+            cost_basis_total = _clean_decimal(row.get("cost basis total") or "")
 
             # Money market funds (e.g. SPAXX) are priced at $1.00/share;
             # Fidelity omits Quantity and Cost Basis — derive from Current Value.
             if (quantity is None or quantity <= 0) and ticker in _MONEY_MARKET_SYMBOLS:
-                current_value = _clean_decimal(row.get("Current Value") or "")
+                current_value = _clean_decimal(row.get("current value") or "")
                 if current_value and current_value > 0:
                     quantity = current_value
                     avg_cost = Decimal("1.00")
@@ -116,7 +200,7 @@ def read_fidelity_positions(
                     continue
 
             if quantity is None or quantity <= 0:
-                logger.debug(f"Skipping {ticker}: invalid quantity '{row.get('Quantity')}'")
+                logger.debug(f"Skipping {ticker}: invalid quantity '{row.get('quantity')}'")
                 skipped.append(ticker)
                 continue
 
@@ -129,13 +213,18 @@ def read_fidelity_positions(
                     skipped.append(ticker)
                     continue
 
-            acct_num = row.get("Account Number", "").strip() or None
+            acct_num = (row.get("account number") or "").strip() or None
             holdings.append(
                 Holding(
                     ticker=ticker,
                     shares=quantity,
                     cost_basis=avg_cost,
-                    purchase_date=date.today(),  # Fidelity positions don't include lot dates
+                    # Fidelity's positions export carries no lot dates. Leave this
+                    # unknown rather than stamping today: a today stamp told the
+                    # analyst agent the position was bought this morning, which
+                    # produced fabricated claims like "the CEO sold on your
+                    # day-of-entry". Real lot dates come from purchase_history.
+                    purchase_date=None,
                     account_number=acct_num,
                 )
             )

@@ -42,9 +42,12 @@ import io
 import json
 import os
 import random
+import re
+import shutil
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -1175,6 +1178,47 @@ def _click_download_trigger(page) -> bool:
     return False
 
 
+_EXPORT_DIR = Path(__file__).resolve().parents[2] / "data" / "fidelity_exports"
+
+# "Portfolio_Positions_Aug-18-2026.csv" and Chrome's "... (3).csv" duplicates
+_EXPORT_NAME_RE = re.compile(r"(Portfolio_Positions_[A-Z][a-z]{2}-\d{2}-\d{4})")
+
+
+def _archive_downloaded_csv(downloaded: Path, export_dir: Path | None = None) -> Path:
+    """Move a freshly downloaded positions CSV into the export folder.
+
+    Chrome refuses to overwrite an existing download, so repeated scrapes pile up
+    `Portfolio_Positions_Aug-18-2026 (1..N).csv` in ~/Downloads. One export date is
+    one snapshot, so the archive keeps a single canonical file per date and moves
+    any previous copy into `superseded/` rather than deleting it.
+
+    Filenames we cannot parse a date from are left exactly where they are.
+    """
+    export_dir = Path(export_dir) if export_dir else _EXPORT_DIR
+    downloaded = Path(downloaded)
+
+    m = _EXPORT_NAME_RE.search(downloaded.name)
+    if not m:
+        logger.debug(f"[fidelity] {downloaded.name}: no export date in name — leaving in place")
+        return downloaded
+
+    export_dir.mkdir(parents=True, exist_ok=True)
+    canonical = export_dir / f"{m.group(1)}.csv"
+
+    if canonical.exists():
+        superseded_dir = export_dir / "superseded"
+        superseded_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.fromtimestamp(canonical.stat().st_mtime).strftime("%Y%m%dT%H%M%S")
+        target = superseded_dir / f"{canonical.stem}.{stamp}.csv"
+        if target.exists():
+            target.unlink()
+        shutil.move(str(canonical), str(target))
+        logger.debug(f"[fidelity] Superseded previous {canonical.name} → {target.name}")
+
+    shutil.move(str(downloaded), str(canonical))
+    return canonical
+
+
 def _poll_for_csv(download_start_ts: float, timeout: float = 55.0) -> str | None:
     """
     Poll for a newly created CSV file.
@@ -1293,8 +1337,9 @@ def _download_csv_from_positions(page) -> str:
             "Debug screenshot saved to data/fidelity_debug/"
         )
 
-    content = Path(csv_path).read_text(encoding="utf-8", errors="replace")
-    logger.info(f"[fidelity] Downloaded positions CSV ({len(content):,} bytes)")
+    archived = _archive_downloaded_csv(Path(csv_path))
+    content = archived.read_text(encoding="utf-8", errors="replace")
+    logger.info(f"[fidelity] Downloaded positions CSV ({len(content):,} bytes) → {archived}")
     return content
 
 
@@ -1632,14 +1677,19 @@ def sync_fidelity_raw(
     headless: bool = True,  # kept for API compat; login is always non-headless
 ) -> list[dict]:
     """Download Fidelity positions and return as list of raw CSV row dicts."""
+    from src.portfolio.fidelity_reader import _normalize_row
+
     username, _, _ = _get_credentials(creds_prefix)
     logger.info(f"[fidelity] Syncing {portfolio_name} (user: {username[:3]}***)")
     csv_text = _download_positions_csv(creds_prefix=creds_prefix)
     rows: list[dict] = []
     reader = csv.DictReader(io.StringIO(csv_text))
     for row in reader:
-        account_name = row.get("Account Name", row.get("Account Name ", "")).strip()
-        account_number = row.get("Account Number", "").strip()
+        # Fidelity varies header casing between exports (2026-08-18: "Account
+        # Number" -> "Account number"), so match keys case-insensitively.
+        norm = _normalize_row(row)
+        account_name = (norm.get("account name") or "").strip()
+        account_number = (norm.get("account number") or "").strip()
         if account_filter:
             filters = account_filter if isinstance(account_filter, list) else [account_filter]
             if not any(
@@ -1678,3 +1728,64 @@ def read_fidelity_live(
 
     logger.info(f"[fidelity] Parsed {len(holdings)} Holding objects for {portfolio_name}")
     return holdings
+
+
+# ── Tax lot acquisition dates ─────────────────────────────────────────────────
+
+_TLH_URL = "https://digital.fidelity.com/ftgw/digital/harvest-tax-losses/"
+
+# One CDP round-trip for the whole table. Reading 111 rows cell-by-cell through
+# DrissionPage takes minutes and tends to drop the page connection.
+_TLH_TABLE_JS = """
+const t = document.querySelector('table');
+if (!t) return null;
+return Array.from(t.querySelectorAll('tr')).map(r =>
+  Array.from(r.querySelectorAll('th,td')).map(c => (c.innerText||'').trim())
+);
+"""
+
+
+def _read_tlh_table(page, settle_secs: float = 14.0) -> list[list[str]]:
+    """Navigate to the Tax Loss Harvesting page and return its table rows."""
+    logger.info("[fidelity] Loading Tax Loss Harvesting page for lot dates…")
+    page.get(_TLH_URL)
+    time.sleep(settle_secs)
+
+    if "signin" in page.url or "login" in page.url.lower():
+        raise FidelityAuthError(
+            "Session expired before the Tax Loss Harvesting page could load"
+        )
+
+    rows = page.run_js(_TLH_TABLE_JS)
+    if not rows:
+        raise FidelityScraperError("No table found on the Tax Loss Harvesting page")
+
+    logger.info(f"[fidelity] Tax Loss Harvesting table: {len(rows)} rows")
+    return rows
+
+
+def sync_fidelity_lot_dates(creds_prefix: str = "") -> dict[str, list[dict]]:
+    """Scrape per-lot acquisition dates, returning {ticker: [lot, ...]}.
+
+    Establishes a session via the normal positions flow (which refreshes saved
+    cookies), then reads the TLH table with those cookies.
+
+    Only positions currently at a loss appear in the TLH tool, so this fills in
+    holding period where the harvest decision lives — not for winners.
+    """
+    from src.portfolio.fidelity_lots import parse_tlh_lot_rows
+
+    # Establishes/refreshes the session; the CSV itself is incidental here.
+    _download_positions_csv(creds_prefix=creds_prefix)
+
+    page = _make_driver(headless=False)
+    try:
+        _load_cookies(page, creds_prefix)
+        rows = _read_tlh_table(page)
+        lots = parse_tlh_lot_rows(rows)
+        logger.info(
+            f"[fidelity] Parsed lot dates for {len(lots)} ticker(s): {sorted(lots)}"
+        )
+        return lots
+    finally:
+        _quit_driver(page)

@@ -14,6 +14,8 @@ data/reminders.json
 
 # Portfolio position CSVs — contain account numbers, share counts, cost basis
 data/*.csv
+# Archived Fidelity exports live in a subdirectory, which data/*.csv does not match
+data/fidelity_exports/
 
 # Fidelity scraper runtime data (cookies = session tokens; debug screenshots may contain PII)
 data/fidelity_sessions/
