@@ -24,8 +24,15 @@ def _db_audit() -> dict:
         results["summaries_total"] = db.query(Summary).count()
         results["recommendations_total"] = db.query(Recommendation).count()
         results["newsletters_total"] = db.query(Newsletter).count()
-        results["newsletters_sent"] = db.query(Newsletter).filter_by(status="sent").count()
-        results["newsletters_failed"] = db.query(Newsletter).filter_by(status="failed").count()
+        # Newsletter tracks delivery via the email_sent boolean; there is no
+        # "status" column, so filter_by(status=...) raised InvalidRequestError
+        # and took the whole `financial-bytes audit` command down with it.
+        results["newsletters_sent"] = (
+            db.query(Newsletter).filter(Newsletter.email_sent.is_(True)).count()
+        )
+        results["newsletters_unsent"] = (
+            db.query(Newsletter).filter(Newsletter.email_sent.is_(False)).count()
+        )
         results["scrape_logs_total"] = db.query(ScrapeLog).count()
 
     logger.info("DB Audit:")

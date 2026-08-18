@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from src.api.massive_client import MassiveClient, MassiveAPIError
 from src.api.models import (
@@ -17,9 +17,21 @@ from src.api.models import (
 from src.config import settings
 
 
+def _should_retry(exc: BaseException) -> bool:
+    """Retry transient massive.com failures only.
+
+    401/403/404 mean the path is wrong or the plan does not cover it — retrying
+    burns 5 requests and up to ~30s of backoff per ticker for a result that
+    cannot change. 429/5xx/network errors are worth another attempt.
+    """
+    if not isinstance(exc, MassiveAPIError):
+        return False
+    return not exc.is_permanent
+
+
 def _retry_decorator():
     return retry(
-        retry=retry_if_exception_type(MassiveAPIError),
+        retry=retry_if_exception(_should_retry),
         wait=wait_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(5),
         reraise=True,
@@ -142,10 +154,18 @@ class MassiveEndpoints:
 
     @_retry_decorator()
     def get_analyst_ratings(self, ticker: str) -> list[AnalystRating]:
-        """Fetch analyst ratings and price targets for a ticker."""
+        """Fetch analyst ratings and price targets for a ticker.
+
+        Note: `/v2/reference/analysts` was never a real route — it 404'd on every
+        call since at least 2026-06-04 (10,350 hits in scheduler.log). The correct
+        Benzinga route is `/benzinga/v1/ratings`, which this plan is not entitled
+        to (403). Either way this returns [] and Finviz supplies the ratings the
+        newsletter actually uses; the path is corrected so an upgraded plan works
+        without a code change.
+        """
         try:
             data = self.client.get(
-                "/v2/reference/analysts",
+                "/benzinga/v1/ratings",
                 params={"ticker": ticker, "limit": 10, "sort": "date", "order": "desc"},
             )
             ratings = []
