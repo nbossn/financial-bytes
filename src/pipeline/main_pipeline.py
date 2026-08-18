@@ -73,6 +73,56 @@ def _apply_purchase_history_to_holdings(
             holding.purchase_date = min(dates)
 
 
+def _fetch_prices_only(tickers: list[str]) -> dict:
+    """Batch-fetch market prices with no signals or analyst work attached."""
+    from decimal import Decimal
+
+    from src.api.yfinance_client import get_quotes_batch_yfinance
+
+    out: dict[str, Decimal] = {}
+    for ticker, quote in (get_quotes_batch_yfinance(tickers) or {}).items():
+        price = getattr(quote, "price", None) or getattr(quote, "last_price", None)
+        if price is not None:
+            out[ticker] = Decimal(str(price))
+    return out
+
+
+def _price_excluded_holdings(excluded: list, prices: dict) -> None:
+    """Price positions that sit outside analyst coverage, in place.
+
+    max_positions bounds how many tickers get an (expensive) analyst call. It must
+    not bound *valuation*: an unpriced holding falls back to cost basis, which
+    reports unrealized P&L of exactly $0.00 and is indistinguishable from a flat
+    position. On 2026-08-18 that silently understated the account by $112,509
+    across 191 positions.
+
+    Prices are cheap, so fetch them for everything and analyse the top N.
+    A price-source failure degrades to the old behaviour rather than aborting.
+    """
+    if not excluded:
+        return
+
+    missing = sorted({h.ticker for h in excluded if h.ticker not in prices})
+    if not missing:
+        return
+
+    logger.info(f"[price] Fetching market prices for {len(missing)} unanalysed holding(s)…")
+    try:
+        fetched = _fetch_prices_only(missing)
+    except Exception as e:
+        logger.warning(f"[price] Could not price unanalysed holdings ({e}) — they fall back to cost basis")
+        return
+
+    for ticker, price in fetched.items():
+        prices.setdefault(ticker, price)
+
+    still_missing = [t for t in missing if t not in prices]
+    logger.info(
+        f"[price] Priced {len(fetched)}/{len(missing)} unanalysed holding(s)"
+        + (f"; still unpriced: {still_missing}" if still_missing else "")
+    )
+
+
 def _split_by_max_positions(holdings: list, pdef) -> tuple[list, list]:
     """Split holdings into (analyzed, excluded) by allowlist or top-N cap.
 
@@ -766,6 +816,10 @@ def run_pipeline(
 
     _upsert_pipeline_run(run_id=run_id, portfolio_name=portfolio_name, report_date=today, phase="signals")
 
+    # Positions outside analyst coverage still need a market price, or they are
+    # valued at cost basis and report $0.00 unrealized P&L.
+    _price_excluded_holdings(_excluded_holdings, market_prices)
+
     if market_prices:
         snapshot = PortfolioSnapshot(
             holdings=holdings,
@@ -780,12 +834,12 @@ def run_pipeline(
     # BRKB shipped that way in ten consecutive newsletters. Say so out loud.
     if snapshot.missing_prices:
         logger.warning(
-            f"[price] {len(snapshot.missing_prices)}/{len(holdings)} holding(s) have no market "
+            f"[price] {len(snapshot.missing_prices)}/{snapshot.position_count} holding(s) have no market "
             f"price and will be valued at cost basis (zero P&L): "
             f"{', '.join(snapshot.missing_prices)}"
         )
     else:
-        logger.info(f"[price] All {len(holdings)} holding(s) priced at market")
+        logger.info(f"[price] All {snapshot.position_count} holding(s) priced at market")
 
     # ── Phase 4: Analyst agents (concurrent via asyncio, DB-first) ─
     # analyze_ticker_async checks the summaries table before calling Claude.

@@ -84,7 +84,7 @@ _SKIP_SYMBOLS = {"FDRXX", "FCNTX", "FZFXX", "FDLXX"}
 _SKIP_PATTERN = re.compile(r"\*+$")  # e.g. "SPAXX**"
 
 # Money market funds priced at $1.00/share — derive quantity from Current Value when Quantity is blank
-_MONEY_MARKET_SYMBOLS = {"SPAXX", "FZDXX", "FZAXX"}
+_MONEY_MARKET_SYMBOLS = {"SPAXX", "FZDXX", "FZAXX", "FMPXX"}
 
 
 def _clean_decimal(value: str) -> Decimal | None:
@@ -208,6 +208,12 @@ def read_fidelity_positions(
             if avg_cost is None or avg_cost <= 0:
                 if cost_basis_total and cost_basis_total > 0:
                     avg_cost = (cost_basis_total / quantity).quantize(Decimal("0.0001"))
+                elif ticker in _MONEY_MARKET_SYMBOLS:
+                    # A $1.00-NAV fund reports a quantity but no cost basis. Before
+                    # this, FMPXX ($135,399 of cash) fell straight through to
+                    # "no cost basis data" and vanished from the portfolio.
+                    avg_cost = Decimal("1.00")
+                    logger.debug(f"Money market {ticker}: cost basis defaulted to $1.00")
                 else:
                     logger.warning(f"Skipping {ticker}: no cost basis data")
                     skipped.append(ticker)
