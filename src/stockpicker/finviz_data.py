@@ -21,12 +21,30 @@ This module:
    predict forward returns (Nick: "track all of these values to correlate to
    impactful indicators").
 
-Phase 2 (documented, not yet built): scrape the short-interest HISTORY page
-(ty=si) and the options/greeks page (ty=oc) for short-trend deviation and IV.
+Phase 2 (built 2026-09-05, see bottom of this file — `fetch_short_interest_
+history`, `fetch_earnings_history`, `fetch_forecast`, `fetch_options_chain`):
+the Short Interest history (ty=si), Financials>Earnings (ty=ea),
+Financials>Forecast (ty=fc), and Options (ty=oc) tabs on the per-ticker page.
+
+IMPORTANT deviation from this module's own plain-`requests` convention,
+confirmed live 2026-09-05: unlike the Overview tab (server-rendered, plain
+`requests` works), all four of these tabs are populated by a client-side React
+widget AFTER load — a plain `requests.get` on any of them returns HTTP 200
+with zero of the target data (confirmed by grepping the raw response for
+"Latest Revisions" / "Settlement Date" / "Strong Buy" / "Open Int." — all
+absent in the static fetch, all present after a real browser renders the
+page). This is the exact same class of problem the bulk screener hit
+(`finviz-screener-plan.md` §1), NOT a Cloudflare block (these tabs clear
+Cloudflare instantly, same as Overview) — so the fix is the same real-browser
+render `finviz_driver.py` already provides, reused here rather than duplicated.
+`fetch_page`/`fetch`/`enrich_ticker` above are UNCHANGED and still plain-
+`requests` only; the four new functions at the bottom of this file are the
+only browser-based code in this module.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 import warnings
 from pathlib import Path
@@ -38,6 +56,7 @@ from bs4 import BeautifulSoup
 
 from src.scrapers.finviz_scraper import _get_page_html, _parse_snapshot, FINVIZ_QUOTE_URL
 from src.stockpicker import insider_news
+from src.stockpicker.finviz_driver import _get_rendered_html
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "stockpicker"
 SNAP_DIR = DATA_DIR / "finviz_snapshots"
@@ -281,6 +300,466 @@ def persist_snapshots(enriched: dict[str, dict], as_of: str | None = None) -> Pa
     payload = {t: e for t, e in enriched.items() if e.get("ok")}
     path.write_text(json.dumps(payload, indent=2, default=str))
     return path
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Phase 2, 2026-09-05 — per-ticker Short Interest / Earnings / Forecast /
+# Options tabs. Browser-based (see module docstring for why). Each function
+# takes an optional already-open `page` (from finviz_driver._make_driver) to
+# reuse one browser across several tabs/tickers, same convention as
+# finviz_screener.run_screen's `page` parameter.
+# ═════════════════════════════════════════════════════════════════════════
+
+FINVIZ_STOCK_URL = "https://finviz.com/stock?t={ticker}&ty={ty}"
+
+
+def _num(text: str | None) -> float | None:
+    """Parse a Finviz numeric cell ('285.96M', '1.23%', '$180.00', '—', '-')
+    into a float, using the same suffix convention as `_parse_cap` (T/B/M/K)
+    plus '$'/','/'%' stripping. Returns None for dash/empty placeholders."""
+    if not text:
+        return None
+    t = text.strip()
+    if t in ("-", "—", "", "N/A"):
+        return None
+    t = t.replace("$", "").replace(",", "").replace("%", "").strip()
+    if t and t[-1].upper() in ("T", "B", "M", "K"):
+        return _parse_cap(t)
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def _parse_short_interest_history(html: str) -> list[dict]:
+    """Parse the Short Interest tab's 'Short Interest History' table.
+
+    Real header row confirmed live 2026-09-05 (NVDA, 159-row MSFT spot check):
+    Settlement Date, Short Interest, Shares Float, Avg. Daily Volume,
+    Short Float, Short Ratio. Column order/labels read from the table's own
+    <thead> (same generalized approach as finviz_screener._parse_header_columns)
+    rather than hardcoded, so a future column reorder doesn't silently mismap.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    h2 = soup.find(lambda tag: tag.name == "h2" and "Short Interest History" in tag.get_text())
+    table = h2.find_next("table") if h2 else None
+    if not table or not table.find("thead"):
+        return []
+    labels = [th.get_text(strip=True) for th in table.find("thead").find_all("th")]
+    keys = [re.sub(r"[^a-z0-9]+", "_", lbl.strip().lower()).strip("_") for lbl in labels]
+    rows: list[dict] = []
+    for tr in table.find("tbody").find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        if len(cells) != len(keys):
+            continue
+        row = dict(zip(keys, cells))
+        row["short_interest"] = _num(row.get("short_interest"))
+        row["shares_float"] = _num(row.get("shares_float"))
+        row["avg_daily_volume"] = _num(row.get("avg_daily_volume"))
+        row["short_float"] = _num(row.get("short_float"))
+        row["short_ratio"] = _num(row.get("short_ratio"))
+        rows.append(row)
+    return rows
+
+
+def fetch_short_interest_history(ticker: str, page: object | None = None) -> list[dict]:
+    """Short interest TREND (not just Overview's single current value) — a
+    real time series of settlement dates with short interest shares, shares
+    float, avg daily volume, short float %, and short ratio (days-to-cover).
+    Confirmed live 2026-09-05: NVDA (~24 rows, ~2yr of biweekly settlements)
+    and MSFT (159 rows) both parse cleanly with this same function."""
+    html = _get_rendered_html(FINVIZ_STOCK_URL.format(ticker=ticker, ty="si"), page=page)
+    if not html:
+        return []
+    return _parse_short_interest_history(html)
+
+
+def _parse_financials_table(table) -> dict:
+    """Parse one of the Earnings tab's 3 `.financials-table` blocks (EPS,
+    GAAP EPS, or Revenue — same markup for all 3, confirmed live 2026-09-05).
+    Returns {"periods": [...], "estimate": [...], "num_analysts": [...],
+    "reported": [...], "surprise": [...], "surprise_pct": [...]}, one value
+    per period, aligned by index."""
+    thead = table.find("thead")
+    periods = [th.get_text(strip=True) for th in thead.find_all("th")][1:] if thead else []
+    out: dict = {"periods": periods}
+    for tr in table.select("tbody tr"):
+        tds = tr.find_all("td")
+        if not tds:
+            continue
+        label = tds[0].get_text(strip=True).lower().replace("# of ", "num_").replace(" ", "_")
+        vals = [td.get_text(separator="|", strip=True) for td in tds[1:]]
+        if label == "surprise":
+            abs_vals, pct_vals = [], []
+            for v in vals:
+                parts = v.split("|")
+                abs_vals.append(_num(parts[0]) if parts else None)
+                pct_vals.append(_num(parts[1]) if len(parts) > 1 else None)
+            out["surprise"] = abs_vals
+            out["surprise_pct"] = pct_vals
+        else:
+            out[label] = [_num(v) for v in vals]
+    return out
+
+
+def _parse_beat_rate(soup) -> dict:
+    """Parse the 3-up 'X% <metric> beats the estimate, N/M last quarters'
+    summary block. Confirmed live 2026-09-05 (NVDA + MSFT): container is
+    `div.justify-evenly` with one `div.flex.text-muted` child per metric."""
+    container = soup.find("div", class_=lambda c: c and "justify-evenly" in c)
+    out: dict = {}
+    if not container:
+        return out
+    for child in container.find_all("div", recursive=False):
+        spans = child.find_all("span", class_="font-semibold")
+        pct_div = child.find("div", class_=lambda c: c and "text-2xl" in c)
+        if len(spans) < 2 or not pct_div:
+            continue
+        metric = spans[0].get_text(strip=True).lower().replace(" ", "_")
+        out[metric] = {
+            "beat_pct": _num(pct_div.get_text(strip=True)),
+            "quarters": spans[1].get_text(strip=True),  # e.g. "8/8"
+        }
+    return out
+
+
+def _parse_latest_revisions(soup) -> list[dict]:
+    """Parse the 'Latest Revisions' panel (per-period estimate + up/down
+    revision counts + revision date). Confirmed live 2026-09-05. Only the
+    metric shown by default (EPS) is captured — the GAAP EPS/Sales toggle
+    buttons require a click this parser doesn't perform (documented
+    limitation, not silently dropped)."""
+    h4 = soup.find(lambda tag: tag.name == "h4" and tag.get_text(strip=True) == "Latest Revisions")
+    if not h4:
+        return []
+    panel = h4.find_parent("div", class_=lambda c: c and "rounded-md" in c and "border-primary" in c)
+    if not panel:
+        return []
+    out = []
+    for grid in panel.find_all("div", class_=lambda c: c and "grid-cols-[102px_auto]" in c):
+        cells = grid.find_all("div", recursive=False)
+        if len(cells) < 9:
+            continue
+        period = cells[0].get_text(strip=True)
+        up_text = cells[4].get_text(strip=True)   # "9/42"
+        down_text = cells[6].get_text(strip=True)  # "0/42"
+        up_n, _, up_of = up_text.partition("/")
+        down_n, _, down_of = down_text.partition("/")
+        out.append({
+            "period": period,
+            "estimate": _num(cells[2].get_text(strip=True)),
+            "up_revisions": _num(up_n), "up_of": _num(up_of),
+            "down_revisions": _num(down_n), "down_of": _num(down_of),
+            "revision_date": cells[8].get_text(strip=True),
+        })
+    return out
+
+
+def fetch_earnings_history(ticker: str, page: object | None = None) -> dict:
+    """Financials > Earnings tab: per-quarter consensus EPS (adjusted + GAAP)
+    + Revenue, each with estimate/# analysts/reported/surprise%, plus the
+    beat-rate summary and the Latest Revisions (up/down) panel. Confirmed
+    live 2026-09-05 for NVDA (12 quarters, 8/8 100% beat rate on all 3
+    metrics, 47 analysts on the oldest quarter down to 36 on the newest) and
+    spot-checked on MSFT (same 3-table/beat-rate/revisions structure).
+
+    Returns {} if the tab's client-side render didn't produce the expected
+    tables (e.g. a genuine site change) — never a partially-wrong dict.
+    """
+    html = _get_rendered_html(FINVIZ_STOCK_URL.format(ticker=ticker, ty="ea"), page=page)
+    if not html:
+        return {}
+    soup = BeautifulSoup(html, "lxml")
+    tables = soup.find_all("table", class_="financials-table")
+    if len(tables) < 3:
+        return {}
+    return {
+        "eps": _parse_financials_table(tables[0]),
+        "gaap_eps": _parse_financials_table(tables[1]),
+        "revenue": _parse_financials_table(tables[2]),
+        "beat_rate": _parse_beat_rate(soup),
+        "latest_revisions_eps": _parse_latest_revisions(soup),
+    }
+
+
+def _parse_forecast_summary(soup) -> dict:
+    """Parse the top 'Analyst Consensus (N) / Low / Avg / High Target' block."""
+    container = soup.find("div", class_=lambda c: c and "justify-center" in c and "gap-16" in c)
+    out: dict = {}
+    if not container:
+        return out
+    for child in container.find_all("div", recursive=False):
+        spans = child.find_all("span", recursive=False)
+        if len(spans) < 2:
+            continue
+        label = spans[0].get_text(strip=True)  # "Analyst Consensus (58)" / "Low Target" / ...
+        value_text = spans[1].get_text(separator="|", strip=True)
+        parts = value_text.split("|")
+        date_text = spans[2].get_text(strip=True) if len(spans) > 2 else None
+        key_m = re.match(r"(.+?)(?:\s*\((\d+)\))?$", label)
+        key = re.sub(r"[^a-z0-9]+", "_", label.split("(")[0].strip().lower()).strip("_")
+        entry = {"date": date_text}
+        if "consensus" in key:
+            entry["rating"] = parts[0] if parts else None
+            m = re.search(r"\((\d+)\)", label)
+            entry["num_analysts"] = int(m.group(1)) if m else None
+        else:
+            entry["value"] = _num(parts[0]) if parts else None
+            entry["pct"] = _num(parts[1]) if len(parts) > 1 else None
+        out[key] = entry
+    return out
+
+
+def _parse_rating_breakdown(soup) -> dict:
+    """Parse the 'N Analysts / Strong Buy: n / Buy: n / ... / Consensus: X (s)'
+    line. Confirmed live 2026-09-05: NVDA 68 analysts (59/6/2/0/1, consensus
+    Strong Buy 1.21) matches the numbers already recorded in
+    `finviz-integration-plan.md` §6 from Nick's screenshot walkthrough."""
+    row = soup.find("div", class_=lambda c: c and "justify-between" in c and "tabular-nums" in c)
+    if not row:
+        return {}
+    text = row.get_text("|", strip=True)
+    out: dict = {}
+    m = re.search(r"(\d+)\s*Analysts", text)
+    if m:
+        out["num_analysts"] = int(m.group(1))
+    # "Buy" and "Sell" are substrings of "Strong Buy"/"Strong Sell" in this
+    # text, so a plain search for "Buy:" would wrongly match inside "Strong
+    # Buy: 59" — negative lookbehind keeps the two pairs distinct (confirmed
+    # live 2026-09-05: without it, NVDA's "buy" count came back as 59, a copy
+    # of "strong_buy", instead of the real value 6).
+    for label in ("Strong Buy", "Strong Sell", "Buy", "Hold", "Sell"):
+        pattern = rf"{label}:\s*(\d+)" if label.startswith("Strong") else rf"(?<!Strong ){label}:\s*(\d+)"
+        m = re.search(pattern, text)
+        if m:
+            out[label.lower().replace(" ", "_")] = int(m.group(1))
+    m = re.search(r"([A-Za-z ]+)\s*\(([\d.]+)\)", text)
+    if m:
+        out["consensus_label"] = m.group(1).strip()
+        out["consensus_score"] = _num(m.group(2))
+    return out
+
+
+def fetch_forecast(ticker: str, page: object | None = None) -> dict:
+    """Financials > Forecast tab: analyst consensus rating breakdown
+    (Strong Buy/Buy/Hold/Sell/Strong Sell counts + numeric score) and
+    Low/Avg/High price targets with % upside. Confirmed live 2026-09-05:
+    NVDA 58-68 analysts (consensus block and rating-breakdown block query
+    slightly different analyst subsets on Finviz's own page, both captured
+    as-is rather than reconciled), Low/Avg/High $180.00/$334.32/$710.29;
+    spot-checked on MSFT (51/60 analysts, $400/$567.45/$700 targets).
+    """
+    html = _get_rendered_html(FINVIZ_STOCK_URL.format(ticker=ticker, ty="fc"), page=page)
+    if not html:
+        return {}
+    soup = BeautifulSoup(html, "lxml")
+    summary = _parse_forecast_summary(soup)
+    breakdown = _parse_rating_breakdown(soup)
+    if not summary and not breakdown:
+        return {}
+    return {"summary": summary, "rating_breakdown": breakdown}
+
+
+def _parse_options_chain(html: str) -> list[dict]:
+    """Parse the Options tab's calls/puts table for whichever expiry is
+    selected by default (the nearest one — confirmed live 2026-09-05: NVDA
+    defaulted to 09/09/2026, the nearest Friday from today's 2026-09-05).
+    Real header order (17 <th> across one table): 7 call columns (Last Close,
+    Change $, Change %, Bid, Ask, Volume, Open Int.), a blank spacer, Strike,
+    a blank spacer, the same 7 columns again for puts."""
+    soup = BeautifulSoup(html, "lxml")
+    call_cols = ["last_close", "change", "change_pct", "bid", "ask", "volume", "open_interest"]
+    target = None
+    for table in soup.find_all("table"):
+        ths = [th.get_text(strip=True) for th in table.find_all("th")]
+        if ths[:7] == ["Last Close", "Change $", "Change %", "Bid", "Ask", "Volume", "Open Int."]:
+            target = table
+            break
+    if target is None:
+        return []
+    rows = []
+    for tr in target.find("tbody").find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        if len(cells) != 17:
+            continue
+        call_vals, strike, put_vals = cells[0:7], cells[8], cells[10:17]
+        row = {"strike": _num(strike)}
+        for k, v in zip(call_cols, call_vals):
+            row[f"call_{k}"] = _num(v) if k != "change_pct" else v
+        for k, v in zip(call_cols, put_vals):
+            row[f"put_{k}"] = _num(v) if k != "change_pct" else v
+        rows.append(row)
+    return rows
+
+
+def fetch_options_chain(ticker: str, page: object | None = None) -> list[dict]:
+    """Options tab: full calls/puts chain (strike, bid/ask, volume, OI) for
+    the nearest expiry shown by default. Lowest priority of the 4 new tabs
+    per Nick's own framing ("not an options trader"). Confirmed live
+    2026-09-05: NVDA nearest expiry (09/09/2026) returned 64 strike rows,
+    both sides populated. Does not select a different expiry — that requires
+    clicking the 'Expiry select' combobox, not implemented."""
+    html = _get_rendered_html(FINVIZ_STOCK_URL.format(ticker=ticker, ty="oc"), page=page)
+    if not html:
+        return []
+    return _parse_options_chain(html)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Breadth-first site pass, 2026-09-05 — Home page Signal table.
+#
+# The ONE genuinely surprising finding from the breadth-first pass across
+# Groups/Calendar/Futures/Forex/News/Home (see
+# `Projects/stock-picker/finviz-exploration-2026-09-05.md` for the full
+# table): unlike every other section checked tonight, Finviz's HOME page
+# Signal table (Top Gainers/Losers, New High/Low, Overbought/Oversold,
+# Unusual Volume, Most Active, Most Volatile, Upgrades/Downgrades, Insider
+# Buying/Selling — 13 categories total) is SERVER-RENDERED. Confirmed live:
+# a plain `requests.get("https://finviz.com/")` returns the real ticker rows
+# with no browser at all — the exact opposite of the bulk screener, which
+# needs the full Cloudflare+browser treatment for the same category of data
+# (`finviz_screener.py`'s `unusual_volume`/`new_52w_high`/`insider_buying`
+# presets). This is a strictly cheaper path to the same signal lists the
+# screener already exposes, for whichever categories the Home page covers.
+# ═════════════════════════════════════════════════════════════════════════
+
+FINVIZ_HOME_URL = "https://finviz.com/"
+
+
+def fetch_home_signals() -> dict[str, list[dict]]:
+    """Home page Signal table — plain `requests`, no browser (see note above).
+    Confirmed live 2026-09-05: 38 rows across 13 categories in one page load
+    (Top Gainers, Top Losers, New High, New Low, Overbought, Oversold,
+    Unusual Volume, Most Active, Most Volatile, Upgrades, Downgrades,
+    Insider Buying, Insider Selling — real sample row: AOUT +44.66% on
+    4.43M volume under Top Gainers).
+
+    Returns {category_slug: [{"ticker", "price", "change_pct", "volume"}, ...]}.
+    Returns {} if the expected row markup isn't found (a real site change,
+    not a silently empty result mistaken for zero matches)."""
+    html = _get_page_html(FINVIZ_HOME_URL)
+    if not html:
+        return {}
+    soup = BeautifulSoup(html, "lxml")
+    rows = soup.find_all("tr", class_=lambda c: c and "hp_signal-row" in c)
+    if not rows:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for tr in rows:
+        tds = tr.find_all("td")
+        if len(tds) != 6:
+            continue
+        ticker_td = tds[0]
+        ticker = ticker_td.get("data-boxover-ticker")
+        if not ticker:
+            for logo in ticker_td.select("span.company-ticker"):
+                logo.decompose()
+            a = ticker_td.find("a")
+            ticker = a.get_text(strip=True) if a else ticker_td.get_text(strip=True)
+        category_a = tds[5].find("a")
+        category = category_a.get_text(strip=True) if category_a else tds[5].get_text(strip=True)
+        if not category:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "_", category.lower()).strip("_")
+        entry = {
+            "ticker": ticker,
+            "price": _num(tds[1].get_text(strip=True)),
+            "change_pct": _num(tds[2].get_text(strip=True)),
+            "volume": _num(tds[3].get_text(strip=True)),
+        }
+        out.setdefault(slug, []).append(entry)
+    return out
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# News page (finviz.com/news.ashx), 2026-09-05 — resolved after being logged
+# genuinely unresolved earlier tonight ("DOM contained only the page's own
+# unrendered JS templates ([[url]]/[[summary]] literal placeholders) — the
+# real feed didn't populate in the time given").
+#
+# Re-investigated with the exact same browser infra (`finviz_driver._make_
+# driver`/`_get_rendered_html`), just a longer/marker-based wait instead of a
+# bare fixed sleep: with a 5s wait (vs. whatever shorter wait the earlier
+# attempt used) the page DOES render 186 real `tr.news_table-row` rows with
+# real headlines/URLs — confirmed against real content (WSJ/NYT/MarketWatch
+# headlines dated the actual day), not just a non-empty DOM. Re-ran via
+# `_get_rendered_html(..., content_marker="news_table-row")` (the same
+# poll-until-present primitive built earlier tonight for the Insiders feed's
+# 0-row race) 4 times in a row on one reused browser: 186/186/186/186 rows,
+# zero flaky empty reads — this did NOT need a scroll-trigger or a tab click,
+# just enough wall-clock time for the client-side render to finish before
+# reading `page.html`.
+#
+# The `[[url]]`/`[[title]]` placeholder strings the earlier attempt saw ARE
+# still present in the page's raw HTML even now (confirmed: `html.count("[[")
+# == 56` on a fully-rendered page) — but they are a native-ad slot's OWN
+# unfired JS template literal (`<a href="[[url]]">[[title]]</a>` inside a
+# `native-container` div), present on every load regardless of whether the
+# real news table rendered. That template string being present is not
+# evidence the feed failed to render; it's an unrelated, always-present ad
+# placeholder. Whatever grepped for `[[` earlier and concluded the page
+# never populated was looking at the wrong marker — a genuine finding worth
+# recording so a future session doesn't repeat the same false negative.
+#
+# Real markup: `tr.news_table-row` — but ~3% of them (6/186 in the sample
+# validated) are Google ad slots sharing the identical row class with no
+# `a.nn-tab-link` inside (just an `img.news_ad-icon-cell` + an ad iframe
+# container) — filtered out below by requiring the headline link to exist,
+# not by row count/position (ad slot placement isn't fixed).
+# ═════════════════════════════════════════════════════════════════════════
+
+FINVIZ_NEWS_URL = "https://finviz.com/news.ashx"
+
+
+def _parse_news(html: str) -> list[dict]:
+    """Parse the News page's headline rows. `html.parser` (not `lxml`) is
+    required here — confirmed live 2026-09-05: `lxml` silently drops every
+    `<svg><use>` element inside each row (0 found where html.parser finds 2),
+    which is where the source-site icon lives; `lxml`'s HTML parser doesn't
+    handle the inline SVG foreign-content the same way. Everything else in
+    this module uses `lxml` deliberately; this function is the one
+    exception, for this one reason."""
+    soup = BeautifulSoup(html, "html.parser")
+    out: list[dict] = []
+    for tr in soup.find_all("tr", class_=lambda c: c and "news_table-row" in c):
+        a = tr.find("a", class_="nn-tab-link")
+        if a is None:
+            continue  # ad slot sharing the same row class, not a headline
+        date_cell = tr.find("td", class_=lambda c: c and "news_date-cell" in c)
+        link_cell = tr.find("td", class_=lambda c: c and "news_link-cell" in c)
+        use = tr.find("use")
+        source = None
+        if use and use.get("href"):
+            source = re.sub(r"-(light|dark)$", "", use["href"].split("#")[-1])
+        out.append({
+            "date": date_cell.get_text(strip=True) if date_cell else None,
+            "headline": a.get_text(strip=True),
+            "url": a.get("href"),
+            "source": source,
+            "summary": link_cell.get("data-boxover-text") if link_cell else None,
+        })
+    return out
+
+
+def fetch_news(page: object | None = None) -> list[dict]:
+    """Finviz's main News page (finviz.com/news.ashx) — general market
+    headlines (WSJ/MarketWatch/NYT/Reuters/etc.), NOT per-ticker news (that's
+    already covered, server-rendered, by `insider_news.parse_news_table` off
+    the legacy quote page `fetch_page` already returns).
+
+    Confirmed live 2026-09-05: 180 real headline rows (of 186 total, 6 being
+    ad slots — filtered out, see `_parse_news`), e.g. "For Many Individual
+    Traders, Prediction Markets Are Hot—and Crypto Is Not" (WSJ, Sep-04).
+    Needed a longer render wait than earlier attempts used, NOT a
+    scroll-trigger or tab click — see the module-level note above for what
+    the earlier "still empty" finding actually was.
+
+    Returns [] if the expected row markup isn't found (a real site change),
+    never a partial/wrong result."""
+    html = _get_rendered_html(FINVIZ_NEWS_URL, page=page, content_marker="news_table-row")
+    if not html:
+        return []
+    return _parse_news(html)
 
 
 if __name__ == "__main__":
